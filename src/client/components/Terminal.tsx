@@ -1150,7 +1150,7 @@ export default function Terminal({
 
       {/* Terminal content - always rendered so ref is attached */}
       <div className="relative flex-1">
-        <div ref={containerRef} className="absolute inset-0" />
+        <div ref={containerRef} className="absolute inset-0 isolate" />
         {isSwitching && session && (
           <div className="absolute top-2 left-2 z-50 flex items-center gap-1.5 rounded-lg bg-black/60 px-2.5 py-1.5 text-xs text-white/90 shadow-lg backdrop-blur-md">
             <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
