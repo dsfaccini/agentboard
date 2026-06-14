@@ -118,8 +118,8 @@ function setupDom() {
     }),
     location: {
       protocol: 'http:',
-      host: 'localhost:4040',
-      port: '4040',
+      host: 'localhost:47329',
+      port: '47329',
     },
   } as unknown as Window & typeof globalThis
 

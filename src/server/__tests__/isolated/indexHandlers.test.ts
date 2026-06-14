@@ -55,7 +55,7 @@ let dbState: {
 }
 
 const defaultConfig = {
-  port: 4040,
+  port: 47329,
   hostname: '0.0.0.0',
   hostLabel: 'test-host',
   refreshIntervalMs: 1000,
@@ -2480,7 +2480,7 @@ describe('server message handlers', () => {
       JSON.stringify({
         type: 'terminal-attach',
         sessionId: baseSession.id,
-        tmuxTarget: 'agentboard',
+        tmuxTarget: baseSession.tmuxWindow,
       })
     )
 
@@ -2492,8 +2492,8 @@ describe('server message handlers', () => {
     }
 
     const groupedTarget = `${configState.tmuxSession}-ws-${ws.data.connectionId}`
-    expect(attached.switchTargets).toEqual(['agentboard'])
-    expect(captureTarget).toBe(groupedTarget)
+    expect(attached.switchTargets).toEqual([baseSession.tmuxWindow])
+    expect(captureTarget).toBe(`${groupedTarget}:1`)
     expect(captureArgs[0]).toBe('capture-pane')
     expect(captureOptions?.timeout).toBe(configState.tmuxTimeoutMs)
     const historyIndex = sent.findIndex(
@@ -2503,13 +2503,13 @@ describe('server message handlers', () => {
         message.data === 'visible pane line\n'
     )
     expect(historyIndex).toBeGreaterThanOrEqual(0)
-    expect(ws.data.currentTmuxTarget).toBe(groupedTarget)
+    expect(ws.data.currentTmuxTarget).toBe(`${groupedTarget}:1`)
 
     websocket.message?.(
       ws as never,
       JSON.stringify({ type: 'tmux-check-copy-mode', sessionId: baseSession.id })
     )
-    expect(copyModeTarget).toBe(groupedTarget)
+    expect(copyModeTarget).toBe(`${groupedTarget}:1`)
   })
 
   test('terminal attach continues when local history capture times out', async () => {
@@ -4190,7 +4190,7 @@ describe('server fetch handlers', () => {
       tailscaleIp: string | null
       protocol: string
     }
-    expect(payload.port).toBe(4040)
+    expect(payload.port).toBe(47329)
     expect(payload.protocol).toBe('http')
     expect(payload.tailscaleIp).toBe('100.64.0.42')
   })

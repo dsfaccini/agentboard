@@ -59,7 +59,7 @@ describe('server entrypoint', () => {
     importCounter += 1
     await import(`../index?test=no-side-effects-${importCounter}`)
 
-    const expectedPort = Number(process.env.PORT) || 4040
+    const expectedPort = Number(process.env.PORT) || 47329
     expect(serveCalls).toHaveLength(1)
     expect(serveCalls[0]?.port).toBe(expectedPort)
   })
@@ -81,7 +81,7 @@ describe('server entrypoint', () => {
     importCounter += 1
     await import(`../index?test=missing-lsof-${importCounter}`)
 
-    const expectedPort = Number(process.env.PORT) || 4040
+    const expectedPort = Number(process.env.PORT) || 47329
     expect(serveCalls).toHaveLength(1)
     expect(serveCalls[0]?.port).toBe(expectedPort)
   })

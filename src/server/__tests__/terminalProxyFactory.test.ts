@@ -16,7 +16,7 @@ class PipePaneTerminalProxyMock {
 }
 
 const configMock = {
-  port: 4040,
+  port: 47329,
   hostname: '0.0.0.0',
   tmuxSession: 'agentboard',
   refreshIntervalMs: 2000,

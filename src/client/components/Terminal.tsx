@@ -938,7 +938,7 @@ export default function Terminal({
 
   return (
     <section
-      className={`flex flex-1 flex-col bg-base terminal-mobile-overlay md:relative md:inset-auto ${isiOS ? 'ios-native-term-selection' : ''}`}
+      className={`flex min-w-0 flex-1 flex-col overflow-hidden bg-base terminal-mobile-overlay md:relative md:inset-auto ${isiOS ? 'ios-native-term-selection' : ''}`}
       data-testid="terminal-panel"
     >
       {/* Mobile header - always show on mobile for drawer access */}
@@ -1149,8 +1149,8 @@ export default function Terminal({
       )}
 
       {/* Terminal content - always rendered so ref is attached */}
-      <div className="relative flex-1">
-        <div ref={containerRef} className="absolute inset-0 isolate" />
+      <div className="relative min-w-0 flex-1 overflow-hidden">
+        <div ref={containerRef} className="absolute inset-0 isolate overflow-hidden" />
         {isSwitching && session && (
           <div className="absolute top-2 left-2 z-50 flex items-center gap-1.5 rounded-lg bg-black/60 px-2.5 py-1.5 text-xs text-white/90 shadow-lg backdrop-blur-md">
             <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">

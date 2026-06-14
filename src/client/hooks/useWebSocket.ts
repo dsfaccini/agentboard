@@ -146,6 +146,16 @@ export class WebSocketManager {
   }
 
   connect() {
+    if (
+      this.isHidden() &&
+      !(this.ws?.readyState === WebSocket.OPEN && this.status === 'connected')
+    ) {
+      clientLog('ws_connect_defer_hidden', this.wsSnap(), 'info')
+      this.destroySocket()
+      this.setStatus('reconnecting')
+      return
+    }
+
     // Clean up any zombie socket that never opened / already closed
     if (this.ws) {
       const isOpen = this.ws.readyState === WebSocket.OPEN
@@ -182,9 +192,11 @@ export class WebSocketManager {
     this.lastConnectTs = Date.now()
     this.leakedSockets.add(ws)
 
-    // Use a longer timeout for the first attempt after resume — VPN tunnels
-    // need extra time and silently drop SYN packets with no error feedback.
-    const timeout = this.isResumeAttempt ? RESUME_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS
+    // Use a longer timeout after resume — VPN tunnels can delay the handshake
+    // without surfacing an error.
+    const timeout = this.isResumeAttempt
+      ? RESUME_CONNECT_TIMEOUT_MS
+      : CONNECT_TIMEOUT_MS
     this.isResumeAttempt = false
 
     // Guard against connections that hang (common on iOS after background)
@@ -720,8 +732,8 @@ export function useWebSocket() {
   )
 
   useEffect(() => {
-    manager.connect()
     manager.startLifecycleListeners()
+    manager.connect()
     const unsubscribe = manager.subscribeStatus((nextStatus, error, nextConnectionEpoch) => {
       // Atomic Zustand update — connectionStatus and connectionEpoch land in the
       // same store commit, so useTerminal sees both changes in a single render.

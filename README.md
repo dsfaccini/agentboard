@@ -79,7 +79,7 @@ Or run directly:
 npx @gbasin/agentboard
 ```
 
-Then open `http://localhost:4040` (or `http://<your-machine>:4040` from another device).
+Then open `http://localhost:47329` (or `http://<your-machine>:47329` from another device).
 
 For persistent deployment, see [systemd/README.md](systemd/README.md) (Linux) or [launchd/README.md](launchd/README.md) (macOS).
 
@@ -92,7 +92,7 @@ bun install
 bun run dev
 ```
 
-Open `http://<your-machine>:5173` (Vite dev server). In production, UI is served from the backend port (default 4040).
+Open `http://localhost:47330` (Vite dev server). In production, UI is served from the backend port (default 47329). The dev server binds to `127.0.0.1`; use a production build with `AGENTBOARD_AUTH_TOKEN` for remote/Tailscale access.
 
 Production:
 
@@ -142,8 +142,10 @@ bun run deps:risk -- --threshold moderate
 ## Environment
 
 ```
-PORT=4040
+PORT=47329
 HOSTNAME=127.0.0.1
+AGENTBOARD_AUTH_TOKEN=<empty>
+AGENTBOARD_BIND_TAILSCALE=false
 TMUX_SESSION=agentboard
 REFRESH_INTERVAL_MS=5000
 DISCOVER_PREFIXES=work,external
@@ -164,11 +166,18 @@ AGENTBOARD_REMOTE_SSH_OPTS=-o BatchMode=yes -o ConnectTimeout=3
 AGENTBOARD_REMOTE_ALLOW_ATTACH=false
 AGENTBOARD_REMOTE_ALLOW_CONTROL=false
 AGENTBOARD_LOG_WATCH_MODE=watch
+AGENTBOARD_WS_MAX_PAYLOAD_BYTES=1048576
+AGENTBOARD_CLIENT_LOG_MAX_BYTES=32768
+AGENTBOARD_PASTE_IMAGE_MAX_BYTES=20971520
 ```
 
-`HOSTNAME` controls which interfaces the server binds to (default `127.0.0.1` for localhost-only). With the default localhost binding, if Tailscale is detected the server also binds to your Tailscale IP automatically. Set to `0.0.0.0` to listen on all interfaces.
+`HOSTNAME` controls which interfaces the server binds to (default `127.0.0.1` for localhost-only). Non-loopback bindings require `AGENTBOARD_AUTH_TOKEN`. Set `HOSTNAME=0.0.0.0` to listen on all interfaces only behind a trusted network boundary and with an auth token configured.
 
-> **Security note:** Agentboard has no built-in authentication. Anyone who can reach the server has full access to your terminal sessions, including the ability to run commands as your user. The default localhost binding is safe. Tailscale provides network-level auth for remote access. Avoid setting `HOSTNAME=0.0.0.0` on untrusted networks (public WiFi, shared LANs) without an additional access control layer.
+`AGENTBOARD_AUTH_TOKEN` enables bearer/cookie auth for API and WebSocket control. Open `http://host:47329/?token=<token>` once to set the secure cookie for the browser, or pass `Authorization: Bearer <token>` for scripts. `/api/health` remains unauthenticated for service checks.
+
+`AGENTBOARD_BIND_TAILSCALE=true` makes a localhost server also bind to the detected Tailscale IPv4 address. This requires `AGENTBOARD_AUTH_TOKEN`; the default is loopback-only.
+
+> **Security note:** Anyone who can reach an unauthenticated Agentboard server has full access to your terminal sessions, including the ability to run commands as your user. The default localhost binding plus origin checks protects normal local browser use. For Tailscale/LAN access, set `AGENTBOARD_AUTH_TOKEN` and avoid `HOSTNAME=0.0.0.0` on untrusted networks.
 
 `DISCOVER_PREFIXES` lets you discover and control windows from other tmux sessions. If unset, all sessions except the managed one are discovered.
 
@@ -180,7 +189,7 @@ AGENTBOARD_LOG_WATCH_MODE=watch
 
 `TERMINAL_MONITOR_TARGETS` (pipe-pane only) polls tmux to detect closed targets (set to `false` to disable).
 
-`VITE_ALLOWED_HOSTS` allows access to the Vite dev server from other hostnames. Useful with Tailscale MagicDNS - add your machine name (e.g., `nuc`) to access the dev server at `http://nuc:5173` from other devices on your tailnet.
+`VITE_ALLOWED_HOSTS` allows access to the Vite dev server from other hostnames. Useful with Tailscale MagicDNS - add your machine name (e.g., `nuc`) to access the dev server at `http://nuc:47330` from other devices on your tailnet.
 
 All persistent data is stored in `~/.agentboard/`: session database (`agentboard.db`) and logs (`agentboard.log`). Override paths with `AGENTBOARD_DB_PATH` and `LOG_FILE`.
 

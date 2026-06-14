@@ -175,6 +175,7 @@ export function useTerminal({
   const serializeAddonRef = useRef<SerializeAddon | null>(null)
   const progressAddonRef = useRef<ProgressAddon | null>(null)
   const resizeTimer = useRef<number | null>(null)
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const fitTimer = useRef<number | null>(null)
   const attachDebounceRef = useRef<number | null>(null)
 
@@ -194,7 +195,7 @@ export function useTerminal({
   const useWebGLRef = useRef(useWebGL)
 
   // Output buffering with idle-based flushing
-  const outputBufferRef = useRef<string>('')
+  const outputBufferRef = useRef<string[]>([])
   const idleTimerRef = useRef<number | null>(null)
   const maxTimerRef = useRef<number | null>(null)
 
@@ -335,6 +336,39 @@ export function useTerminal({
     }
   }, [])
 
+  const stopResizeObserver = useCallback(() => {
+    resizeObserverRef.current?.disconnect()
+    resizeObserverRef.current = null
+    if (resizeTimer.current) {
+      window.clearTimeout(resizeTimer.current)
+      resizeTimer.current = null
+    }
+  }, [])
+
+  const startResizeObserver = useCallback(() => {
+    const container = containerRef.current
+    const terminal = terminalRef.current
+    const fitAddon = fitAddonRef.current
+
+    if (!container || !terminal || !fitAddon || resizeObserverRef.current) return
+    if (typeof ResizeObserver === 'undefined') return
+
+    const handleResize = () => {
+      if (resizeTimer.current) {
+        window.clearTimeout(resizeTimer.current)
+      }
+
+      resizeTimer.current = window.setTimeout(() => {
+        fitAndResize()
+      }, 150)
+    }
+
+    const observer = new ResizeObserver(handleResize)
+    observer.observe(container)
+    resizeObserverRef.current = observer
+    handleResize()
+  }, [fitAndResize])
+
   // Terminal initialization - only once on mount
   useEffect(() => {
     const container = containerRef.current
@@ -413,6 +447,7 @@ export function useTerminal({
 
       terminal.open(container)
       fitAddon.fit()
+      startResizeObserver()
 
       if (!hasLoggedInitRef.current) {
         hasLoggedInitRef.current = true
@@ -743,6 +778,7 @@ export function useTerminal({
 
       let scrolledUp = false
       let didScroll = false
+      let scrollInput = ''
       while (Math.abs(wheelAccumRef.current) >= STEP) {
         didScroll = true
         const down = wheelAccumRef.current > 0
@@ -751,11 +787,7 @@ export function useTerminal({
         // SGR mouse wheel: button 64 = scroll up, 65 = scroll down
         const button = down ? 65 : 64
         if (!down) scrolledUp = true
-        sendMessageRef.current({
-          type: 'terminal-input',
-          sessionId: attached,
-          data: `\x1b[<${button};${col};${row}M`
-        })
+        scrollInput += `\x1b[<${button};${col};${row}M`
       }
 
       // Optimistically show button when scrolling up
@@ -764,6 +796,11 @@ export function useTerminal({
       }
       // Request actual copy-mode status from tmux (debounced) - only if we sent scroll
       if (didScroll) {
+        sendMessageRef.current({
+          type: 'terminal-input',
+          sessionId: attached,
+          data: scrollInput,
+        })
         requestCopyModeCheck()
       }
       return false // We handled it, prevent xterm local scroll
@@ -818,6 +855,7 @@ export function useTerminal({
       }
       terminalRef.current = null
       fitAddonRef.current = null
+      stopResizeObserver()
       searchAddonRef.current = null
       serializeAddonRef.current = null
       progressAddonRef.current = null
@@ -829,7 +867,7 @@ export function useTerminal({
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitAndResize])
+  }, [fitAndResize, startResizeObserver, stopResizeObserver])
 
   // Update theme
   useEffect(() => {
@@ -994,7 +1032,7 @@ export function useTerminal({
       // Defer reset until history arrives (no blank flash).
       // Drain stale output buffer first — prevents old session's data
       // from consuming the one-shot reset meant for new session's history.
-      outputBufferRef.current = ''
+      outputBufferRef.current = []
       if (idleTimerRef.current !== null) {
         window.clearTimeout(idleTimerRef.current)
         idleTimerRef.current = null
@@ -1133,10 +1171,11 @@ export function useTerminal({
       }
 
       const terminal = terminalRef.current
-      const data = outputBufferRef.current
-      if (!terminal || !data) return
+      const chunks = outputBufferRef.current
+      if (!terminal || chunks.length === 0) return
 
-      outputBufferRef.current = ''
+      outputBufferRef.current = []
+      const data = chunks.join('')
 
       // Atomically swap: reset + write in same JS task = one rAF frame, no blank
       if (needsResetRef.current) {
@@ -1216,9 +1255,9 @@ export function useTerminal({
           switchStartRef.current = null
         }
 
-        outputBufferRef.current += isiOS
-          ? forceTextPresentation(message.data)
-          : message.data
+        outputBufferRef.current.push(
+          isiOS ? forceTextPresentation(message.data) : message.data
+        )
         scheduleFlush()
       }
 
@@ -1231,7 +1270,7 @@ export function useTerminal({
         // stay atomic (avoids blank flash from resetting before flush fires).
         // If no output arrived at all (empty pane or server dedup), reset
         // to clear stale content from the previous session.
-        if (needsResetRef.current && outputBufferRef.current) {
+        if (needsResetRef.current && outputBufferRef.current.length > 0) {
           flush()
         } else if (needsResetRef.current) {
           terminalRef.current?.reset()
@@ -1293,39 +1332,6 @@ export function useTerminal({
       cancelIosRepaint()
     }
   }, [subscribe, checkScrollPosition, setTmuxCopyMode])
-
-  // Handle resize - with longer debounce to prevent flickering
-  useEffect(() => {
-    const container = containerRef.current
-    const terminal = terminalRef.current
-    const fitAddon = fitAddonRef.current
-
-    if (!container || !terminal || !fitAddon) return
-
-    const handleResize = () => {
-      if (resizeTimer.current) {
-        window.clearTimeout(resizeTimer.current)
-      }
-
-      // Longer debounce to prevent rapid resize events
-      resizeTimer.current = window.setTimeout(() => {
-        fitAndResize()
-      }, 150)
-    }
-
-    const observer = new ResizeObserver(handleResize)
-    observer.observe(container)
-
-    // Initial fit
-    handleResize()
-
-    return () => {
-      observer.disconnect()
-      if (resizeTimer.current) {
-        window.clearTimeout(resizeTimer.current)
-      }
-    }
-  }, [])
 
   // Force iOS compositor repaint on visibility resume.
   // iOS WKWebView shows a stale cached snapshot after background/foreground.

@@ -1069,7 +1069,14 @@ registry.on('agent-sessions-active', (active) => {
 
 app.post('/api/client-log', async (c) => {
   try {
+    const contentLength = Number(c.req.header('content-length') ?? 0)
+    if (Number.isFinite(contentLength) && contentLength > configuredClientLogMaxBytes) {
+      return c.json({ error: 'Payload too large' }, 413)
+    }
     const body = await c.req.json() as { level?: string; event: string; data?: Record<string, unknown> }
+    if (body.event.length > 200) {
+      return c.json({ error: 'Event name too large' }, 413)
+    }
     const level = body.level === 'warn' || body.level === 'error' || body.level === 'info' ? body.level : 'debug'
     logger[level]('client_' + body.event, body.data)
   } catch {
@@ -1372,6 +1379,13 @@ app.post('/api/paste-image', async (c) => {
     if (!file) {
       return c.json({ error: 'No image provided' }, 400)
     }
+    const allowedTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+    if (!allowedTypes.has(file.type)) {
+      return c.json({ error: 'Unsupported image type' }, 415)
+    }
+    if (file.size > configuredPasteImageMaxBytes) {
+      return c.json({ error: 'Image too large' }, 413)
+    }
 
     // Generate unique filename in temp directory
     const ext = file.type.split('/')[1] || 'png'
@@ -1428,10 +1442,95 @@ const tlsEnabled = config.tlsCert && config.tlsKey
 const tlsOptions = tlsEnabled
   ? { tls: { cert: Bun.file(config.tlsCert), key: Bun.file(config.tlsKey) } }
   : {}
+const AUTH_COOKIE_NAME = 'agentboard_auth'
+const configuredAuthToken = config.authToken ?? ''
+const configuredWsMaxPayloadBytes = config.wsMaxPayloadBytes ?? 1024 * 1024
+const configuredClientLogMaxBytes = config.clientLogMaxBytes ?? 32 * 1024
+const configuredPasteImageMaxBytes = config.pasteImageMaxBytes ?? 20 * 1024 * 1024
+const authEnabled = configuredAuthToken.length > 0
 
-function serverFetch(req: Request, server: Server<WSData>) {
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === '127.0.0.1' ||
+    hostname === 'localhost' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+}
+
+if (process.env.NODE_ENV !== 'test' && !isLoopbackHostname(config.hostname) && !authEnabled) {
+  logger.error('auth_token_required_for_non_loopback_bind', {
+    hostname: config.hostname,
+    env: 'AGENTBOARD_AUTH_TOKEN',
+  })
+  process.exit(1)
+}
+
+function isLoopbackUrlHostname(hostname: string): boolean {
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
+}
+
+function isRequestOriginAllowed(req: Request): boolean {
+  const originHeader = req.headers.get('origin')
+  if (!originHeader) return true
+
+  try {
+    const origin = new URL(originHeader)
+    const requestUrl = new URL(req.url)
+    if (origin.hostname === requestUrl.hostname) return true
+    return isLoopbackUrlHostname(origin.hostname) && isLoopbackUrlHostname(requestUrl.hostname)
+  } catch {
+    return false
+  }
+}
+
+function getCookieValue(req: Request, name: string): string | null {
+  const cookieHeader = req.headers.get('cookie')
+  if (!cookieHeader) return null
+  const prefix = `${name}=`
+  for (const part of cookieHeader.split(';')) {
+    const trimmed = part.trim()
+    if (trimmed.startsWith(prefix)) {
+      return decodeURIComponent(trimmed.slice(prefix.length))
+    }
+  }
+  return null
+}
+
+function isAuthorizedRequest(req: Request, url: URL): boolean {
+  if (!authEnabled) return true
+  const authHeader = req.headers.get('authorization')
+  if (authHeader === `Bearer ${configuredAuthToken}`) return true
+  if (url.searchParams.get('token') === configuredAuthToken) return true
+  return getCookieValue(req, AUTH_COOKIE_NAME) === configuredAuthToken
+}
+
+function withAuthCookie(url: URL, response: Response): Response {
+  if (!authEnabled || url.searchParams.get('token') !== configuredAuthToken) {
+    return response
+  }
+
+  const headers = new Headers(response.headers)
+  const secure = url.protocol === 'https:' ? '; Secure' : ''
+  headers.append(
+    'Set-Cookie',
+    `${AUTH_COOKIE_NAME}=${encodeURIComponent(configuredAuthToken)}; Path=/; HttpOnly; SameSite=Strict${secure}`
+  )
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
+async function serverFetch(req: Request, server: Server<WSData>) {
   const url = new URL(req.url)
+  if (!isRequestOriginAllowed(req)) {
+    return new Response('Forbidden origin', { status: 403 })
+  }
+
   if (url.pathname === '/ws') {
+    if (!isAuthorizedRequest(req, url)) {
+      return new Response('Unauthorized', { status: 401 })
+    }
     const requestIp =
       typeof server.requestIP === 'function' ? server.requestIP(req) : null
     if (
@@ -1455,11 +1554,19 @@ function serverFetch(req: Request, server: Server<WSData>) {
     return new Response('WebSocket upgrade failed', { status: 400 })
   }
 
-  return app.fetch(req)
+  if (url.pathname.startsWith('/api/') && url.pathname !== '/api/health') {
+    if (!isAuthorizedRequest(req, url)) {
+      return new Response('Unauthorized', { status: 401 })
+    }
+  }
+
+  const response = await app.fetch(req)
+  return withAuthCookie(url, response)
 }
 
 const websocketHandlers = {
   idleTimeout: 40,
+  maxPayloadLength: configuredWsMaxPayloadBytes,
   sendPings: true,
   perMessageDeflate: true,
   open(ws: ServerWebSocket<WSData>) {
@@ -1500,26 +1607,33 @@ Bun.serve<WSData>({
   websocket: websocketHandlers,
 })
 
-// When bound to localhost, also listen on the Tailscale interface if available.
-// This allows remote access over Tailscale without exposing the LAN interface.
+// When bound to localhost, optionally listen on the Tailscale interface.
+// This exposes terminal control off-machine, so it is explicit and token-gated.
 let boundTailscaleIp: string | null = null
-if (config.hostname === '127.0.0.1') {
-  const detectedIp = getTailscaleIp()
-  if (detectedIp) {
-    try {
-      Bun.serve<WSData>({
-        port: config.port,
-        hostname: detectedIp,
-        ...tlsOptions,
-        fetch: serverFetch,
-        websocket: websocketHandlers,
-      })
-      boundTailscaleIp = detectedIp
-    } catch (error) {
-      logger.warn('tailscale_bind_failed', {
-        ip: detectedIp,
-        error: error instanceof Error ? error.message : String(error),
-      })
+if (config.hostname === '127.0.0.1' && (config.bindTailscale ?? false)) {
+  if (!authEnabled) {
+    logger.warn('tailscale_bind_skipped', {
+      reason: 'auth_token_required',
+      env: 'AGENTBOARD_AUTH_TOKEN',
+    })
+  } else {
+    const detectedIp = getTailscaleIp()
+    if (detectedIp) {
+      try {
+        Bun.serve<WSData>({
+          port: config.port,
+          hostname: detectedIp,
+          ...tlsOptions,
+          fetch: serverFetch,
+          websocket: websocketHandlers,
+        })
+        boundTailscaleIp = detectedIp
+      } catch (error) {
+        logger.warn('tailscale_bind_failed', {
+          ip: detectedIp,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
   }
 }
@@ -1613,6 +1727,10 @@ function handleMessage(
     typeof rawMessage === 'string'
       ? rawMessage
       : new TextDecoder().decode(rawMessage)
+  if (text.length > configuredWsMaxPayloadBytes) {
+    send(ws, { type: 'error', message: 'Message payload too large' })
+    return
+  }
 
   let message: ClientMessage
   try {
@@ -3276,7 +3394,22 @@ async function attachTerminalPersistent(
     return
   }
 
-  const target = tmuxTarget ?? session.tmuxWindow
+  if (tmuxTarget !== undefined) {
+    if (!isValidTmuxTarget(tmuxTarget)) {
+      if (isTerminalAttachCurrent(ws, attachSeq)) {
+        sendTerminalError(ws, sessionId, 'ERR_INVALID_WINDOW', 'Invalid tmux target', false)
+      }
+      return
+    }
+    if (tmuxTarget !== session.tmuxWindow) {
+      if (isTerminalAttachCurrent(ws, attachSeq)) {
+        sendTerminalError(ws, sessionId, 'ERR_INVALID_WINDOW', 'Tmux target does not match session', false)
+      }
+      return
+    }
+  }
+
+  const target = session.tmuxWindow
   if (!isValidTmuxTarget(target)) {
     if (isTerminalAttachCurrent(ws, attachSeq)) {
       sendTerminalError(ws, sessionId, 'ERR_INVALID_WINDOW', 'Invalid tmux target', false)
@@ -3308,6 +3441,9 @@ async function attachTerminalPersistent(
   }
 
   const effectiveTarget = terminal.resolveEffectiveTarget(target)
+  if (!session.remote && typeof cols === 'number' && typeof rows === 'number') {
+    resizeLocalTmuxWindow(effectiveTarget, cols, rows)
+  }
 
   // Deduplicate rapid re-attaches to the same session+target (e.g. two
   // terminal-attach messages arriving within ~34ms).  Skip the expensive
@@ -3440,6 +3576,52 @@ function captureTmuxHistory(target: string): string | null {
   }
 }
 
+function normalizeTerminalDimension(value: number): number | null {
+  if (!Number.isFinite(value)) return null
+  const dimension = Math.floor(value)
+  if (dimension < 2 || dimension > 1000) return null
+  return dimension
+}
+
+function resizeLocalTmuxWindow(target: string, cols: number, rows: number): void {
+  if (!isValidTmuxTarget(target)) return
+  const safeCols = normalizeTerminalDimension(cols)
+  const safeRows = normalizeTerminalDimension(rows)
+  if (safeCols === null || safeRows === null) return
+
+  try {
+    const result = Bun.spawnSync([
+      'tmux',
+      'resize-window',
+      '-t',
+      target,
+      '-x',
+      safeCols.toString(),
+      '-y',
+      safeRows.toString(),
+    ], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: config.tmuxMutationTimeoutMs,
+    })
+    if (result.exitCode !== 0) {
+      logger.debug('tmux_window_resize_failed', {
+        target,
+        cols: safeCols,
+        rows: safeRows,
+        error: result.stderr?.toString() ?? '',
+      })
+    }
+  } catch (error) {
+    logger.debug('tmux_window_resize_failed', {
+      target,
+      cols: safeCols,
+      rows: safeRows,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
 function sshOptionsForHost(): string[] {
   return [
     '-o', 'BatchMode=yes',
@@ -3516,6 +3698,10 @@ function handleTerminalInputPersistent(
   sessionId: string,
   data: string
 ) {
+  if (data.length > configuredWsMaxPayloadBytes) {
+    send(ws, { type: 'error', message: 'Terminal input too large' })
+    return
+  }
   if (sessionId !== ws.data.currentSessionId) {
     return
   }
@@ -3549,6 +3735,9 @@ function handleTerminalResizePersistent(
   if (session?.remote && !config.remoteAllowAttach) return
 
   ws.data.terminal?.resize(cols, rows)
+  if (!session?.remote && ws.data.currentTmuxTarget) {
+    resizeLocalTmuxWindow(ws.data.currentTmuxTarget, cols, rows)
+  }
 }
 
 

@@ -795,7 +795,6 @@ describe('zombie OPEN socket detection', () => {
 
 describe('scheduleReconnect while hidden', () => {
   test('does not schedule timer when page is hidden', () => {
-    mockVisibilityState = 'hidden'
     const manager = new WebSocketManager()
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
@@ -805,6 +804,7 @@ describe('scheduleReconnect while hidden', () => {
     ws.triggerOpen()
 
     // Close while hidden
+    mockVisibilityState = 'hidden'
     ws.close()
 
     // Status should be reconnecting but no timer scheduled
@@ -1161,6 +1161,26 @@ describe('resume settle delay', () => {
     // Standard 3000ms timeout should NOT be present for the new socket
     const standardTimeouts = timers.filter((t) => t.delay === 3000)
     expect(standardTimeouts).toHaveLength(0)
+  })
+
+  test('hidden tab initial connect is deferred until visible', () => {
+    mockVisibilityState = 'hidden'
+    const manager = new WebSocketManager()
+    const statuses: string[] = []
+    manager.subscribeStatus((status) => statuses.push(status))
+    manager.startLifecycleListeners()
+
+    manager.connect()
+
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(statuses[statuses.length - 1]).toBe('reconnecting')
+
+    fireVisibilityChange('visible')
+    fireSettleTimer()
+
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    const connectTimeout = timers.find((t) => t.delay === 8000)
+    expect(connectTimeout).toBeDefined()
   })
 
   test('non-forced reconnect connects immediately without settle delay', () => {

@@ -486,7 +486,7 @@ export default function SessionList({
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="sticky top-0 z-10 flex h-10 items-center justify-start gap-2 border-b border-border bg-elevated px-3">
+        <div className="sticky top-0 z-20 flex h-10 items-center justify-start gap-2 border-b border-border bg-elevated px-3">
           {showHostInfo && (
             <HostFilterDropdown
               hosts={uniqueHosts}
@@ -550,7 +550,7 @@ export default function SessionList({
                   items={filteredSessions.map((s) => s.id)}
                   strategy={verticalListSortingStrategy}
                 >
-                  <div key={filterKey}>
+                  <div key={filterKey} className="relative">
                     <AnimatePresence
                       initial={false}
                       mode={useSafariLayoutFallback ? 'sync' : 'popLayout'}

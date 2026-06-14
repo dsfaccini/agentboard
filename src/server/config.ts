@@ -141,8 +141,23 @@ const tmuxMutationTimeoutMs = Number.isFinite(tmuxMutationTimeoutMsRaw) && tmuxM
   ? Math.max(Math.floor(tmuxMutationTimeoutMsRaw), tmuxTimeoutMs)
   : Math.max(tmuxTimeoutMs * 5, 15000)
 
+const authToken = process.env.AGENTBOARD_AUTH_TOKEN?.trim() || ''
+const bindTailscale = process.env.AGENTBOARD_BIND_TAILSCALE === 'true'
+const wsMaxPayloadBytesRaw = Number(process.env.AGENTBOARD_WS_MAX_PAYLOAD_BYTES)
+const wsMaxPayloadBytes = Number.isFinite(wsMaxPayloadBytesRaw) && wsMaxPayloadBytesRaw > 0
+  ? Math.floor(wsMaxPayloadBytesRaw)
+  : 1024 * 1024
+const clientLogMaxBytesRaw = Number(process.env.AGENTBOARD_CLIENT_LOG_MAX_BYTES)
+const clientLogMaxBytes = Number.isFinite(clientLogMaxBytesRaw) && clientLogMaxBytesRaw > 0
+  ? Math.floor(clientLogMaxBytesRaw)
+  : 32 * 1024
+const pasteImageMaxBytesRaw = Number(process.env.AGENTBOARD_PASTE_IMAGE_MAX_BYTES)
+const pasteImageMaxBytes = Number.isFinite(pasteImageMaxBytesRaw) && pasteImageMaxBytesRaw > 0
+  ? Math.floor(pasteImageMaxBytesRaw)
+  : 20 * 1024 * 1024
+
 export const config = {
-  port: Number(process.env.PORT) || 4040,
+  port: Number(process.env.PORT) || 47329,
   hostname: process.env.HOSTNAME || '127.0.0.1',
   hostLabel,
   tmuxSession: process.env.TMUX_SESSION || 'agentboard',
@@ -191,4 +206,9 @@ export const config = {
   remoteAllowAttach,
   tmuxTimeoutMs,
   tmuxMutationTimeoutMs,
+  authToken,
+  bindTailscale,
+  wsMaxPayloadBytes,
+  clientLogMaxBytes,
+  pasteImageMaxBytes,
 }

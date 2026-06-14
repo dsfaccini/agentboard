@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
   const allowedHosts = env.VITE_ALLOWED_HOSTS
     ? env.VITE_ALLOWED_HOSTS.split(',').map((h) => h.trim())
     : []
-  const backendPort = env.PORT || '4040'
+  const backendPort = env.PORT || '47329'
 
   return {
     plugins: [
@@ -75,6 +75,8 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      port: Number(env.VITE_PORT) || 47330,
+      strictPort: true,
       allowedHosts,
       https: (() => {
         const homeDir = process.env.HOME

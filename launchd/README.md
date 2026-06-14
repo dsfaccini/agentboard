@@ -26,11 +26,18 @@ Installs two agents:
 - **`com.agentboard`** — supervises agentboard. `KeepAlive` respawns on crash or non-zero exit, `ThrottleInterval: 10` prevents tight restart loops.
 - **`com.agentboard.logrotate`** — hourly. Rotates `agentboard.log`, `launchd.out.log`, and `launchd.err.log` under `~/.agentboard/` at 50MB each using a copytruncate pattern (preserves pino's open file descriptor), keeps 5 gzipped archives per file.
 
-After install, agentboard listens on `http://localhost:4040`.
+After install, agentboard listens on `http://localhost:47329`.
 
 ## Commands
 
 ```bash
+# Controller command (installed locally as `agentboard`)
+agentboard          # Start and print URL
+agentboard status   # LaunchAgent + health status
+agentboard stop     # Stop the LaunchAgent and any matching leftover listener
+agentboard restart  # Restart and wait for health
+agentboard logs     # Tail app + launchd logs
+
 # Status
 launchctl list | grep agentboard
 
@@ -43,7 +50,7 @@ tail ~/.agentboard/launchd.{out,err}.log
 # Force restart
 launchctl kickstart -k gui/$(id -u)/com.agentboard
 
-# Stop (e.g. before running `bun run dev` against port 4040)
+# Stop (e.g. before running `bun run dev` against port 47329)
 launchctl unload ~/Library/LaunchAgents/com.agentboard.plist
 
 # Re-enable

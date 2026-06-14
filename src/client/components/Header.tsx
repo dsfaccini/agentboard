@@ -32,7 +32,7 @@ export default function Header({
 
   const handleCopyTailscaleUrl = () => {
     if (!tailscaleIp) return
-    const url = `http://${tailscaleIp}:${window.location.port || '4040'}`
+    const url = `http://${tailscaleIp}:${window.location.port || '47329'}`
     navigator.clipboard.writeText(url)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
