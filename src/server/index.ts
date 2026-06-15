@@ -1,7 +1,9 @@
 import type { Server, ServerWebSocket } from 'bun'
+import { createReadStream } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { createInterface } from 'node:readline'
 import { Hono, type Context } from 'hono'
 import { serveStatic } from 'hono/bun'
 import { config, isValidHostname } from './config'
@@ -101,6 +103,156 @@ function checkPortAvailable(port: number): void {
     logger.error('port_in_use', { port, pid, processName })
     process.exit(1)
   }
+}
+
+interface LogLineWindow {
+  totalLines: number
+  startLine: number
+  endLine: number
+  hasMoreBefore: boolean
+  lines: string[]
+}
+
+// Hibernated session logs are static (the session is no longer writing to them),
+// so the parsed line array is cached and re-sliced for pagination instead of
+// re-scanning the whole file on every "Load earlier" request. Entries are keyed
+// by size+mtime so a rewritten log self-invalidates, and the cache is byte-bounded
+// so it can't grow without limit.
+interface CachedLogLines {
+  size: number
+  mtimeMs: number
+  lines: string[]
+}
+const LOG_LINE_CACHE = new Map<string, CachedLogLines>()
+// Logs larger than this are streamed with a bounded window instead of cached, so
+// a pathologically large file never lands in memory whole.
+const MAX_CACHEABLE_LOG_BYTES = 4 * 1024 * 1024
+// Total budget across all cached logs; oldest entries are evicted past this.
+const MAX_LOG_CACHE_BYTES = 16 * 1024 * 1024
+let logLineCacheBytes = 0
+
+function enforceLogCacheBudget(): void {
+  // Map preserves insertion order, so the first key is the least-recently-used.
+  while (logLineCacheBytes > MAX_LOG_CACHE_BYTES) {
+    const oldestKey = LOG_LINE_CACHE.keys().next().value
+    if (oldestKey === undefined) break
+    const evicted = LOG_LINE_CACHE.get(oldestKey)
+    LOG_LINE_CACHE.delete(oldestKey)
+    if (evicted) logLineCacheBytes -= evicted.size
+  }
+}
+
+function selectLineWindow(
+  lines: string[],
+  limit: number,
+  beforeLine: number
+): LogLineWindow {
+  const totalLines = lines.length
+  const requestedEndLine = Number.isFinite(beforeLine)
+    ? Math.max(0, Math.trunc(beforeLine))
+    : totalLines
+  const endLine = Math.min(totalLines, requestedEndLine)
+  const startLine = Math.max(0, endLine - limit)
+  return {
+    totalLines,
+    startLine,
+    endLine,
+    hasMoreBefore: startLine > 0,
+    lines: lines.slice(startLine, endLine),
+  }
+}
+
+async function readAllLogLines(logPath: string): Promise<string[]> {
+  const lines: string[] = []
+  const fileStream = createReadStream(logPath, { encoding: 'utf8' })
+  const reader = createInterface({ input: fileStream, crlfDelay: Infinity })
+  try {
+    for await (const line of reader) {
+      lines.push(line)
+    }
+  } finally {
+    // close() ends the readline interface; destroy() releases the fd even when
+    // iteration aborts early (e.g. EIO mid-read), which close() alone won't do.
+    reader.close()
+    fileStream.destroy()
+  }
+  return lines
+}
+
+// Streaming fallback for logs too large to cache: holds only the requested window
+// in memory while counting total lines.
+async function streamLogLineWindow(
+  logPath: string,
+  limit: number,
+  beforeLine: number
+): Promise<LogLineWindow> {
+  const requestedEndLine = Number.isFinite(beforeLine)
+    ? Math.max(0, Math.trunc(beforeLine))
+    : Number.POSITIVE_INFINITY
+  const selectedLines: string[] = []
+  let totalLines = 0
+
+  const fileStream = createReadStream(logPath, { encoding: 'utf8' })
+  const reader = createInterface({ input: fileStream, crlfDelay: Infinity })
+
+  try {
+    for await (const line of reader) {
+      if (totalLines < requestedEndLine) {
+        selectedLines.push(line)
+        if (selectedLines.length > limit) {
+          selectedLines.shift()
+        }
+      }
+      totalLines += 1
+    }
+  } finally {
+    reader.close()
+    fileStream.destroy()
+  }
+
+  const endLine = Math.min(totalLines, requestedEndLine)
+  const startLine = Math.max(0, endLine - selectedLines.length)
+  return {
+    totalLines,
+    startLine,
+    endLine,
+    hasMoreBefore: startLine > 0,
+    lines: selectedLines,
+  }
+}
+
+async function readLogLineWindow(
+  logPath: string,
+  stats: { size: number; mtimeMs: number },
+  limit: number,
+  beforeLine: number
+): Promise<LogLineWindow> {
+  // Don't cache oversized logs; stream a bounded window so memory stays in check.
+  if (stats.size > MAX_CACHEABLE_LOG_BYTES) {
+    return streamLogLineWindow(logPath, limit, beforeLine)
+  }
+
+  const cached = LOG_LINE_CACHE.get(logPath)
+  if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
+    // Refresh recency: re-inserting moves the key to the end of the Map.
+    LOG_LINE_CACHE.delete(logPath)
+    LOG_LINE_CACHE.set(logPath, cached)
+    return selectLineWindow(cached.lines, limit, beforeLine)
+  }
+
+  const lines = await readAllLogLines(logPath)
+  // Reconcile byte accounting against the CURRENT entry (re-read after the await,
+  // not the pre-await `cached`) so two concurrent misses for the same path can't
+  // double-count and skew the cache budget.
+  const prior = LOG_LINE_CACHE.get(logPath)
+  if (prior) {
+    LOG_LINE_CACHE.delete(logPath)
+    logLineCacheBytes -= prior.size
+  }
+  LOG_LINE_CACHE.set(logPath, { size: stats.size, mtimeMs: stats.mtimeMs, lines })
+  logLineCacheBytes += stats.size
+  enforceLogCacheBudget()
+  return selectLineWindow(lines, limit, beforeLine)
 }
 
 function getTailscaleIp(): string | null {
@@ -1094,6 +1246,18 @@ app.get('/api/session-preview/:sessionId', async (c) => {
     return c.json({ error: 'Invalid session id' }, 400)
   }
 
+  const DEFAULT_LIMIT = 200
+  const MAX_LIMIT = 500
+  // Treat a missing OR empty `?limit=` as absent — `'' ?? DEFAULT` keeps '', and
+  // Number('') is 0, which would otherwise collapse the window to a single line.
+  const limitQuery = c.req.query('limit')
+  const rawLimit = limitQuery === undefined || limitQuery === ''
+    ? DEFAULT_LIMIT
+    : Number(limitQuery)
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(MAX_LIMIT, Math.max(1, Math.trunc(rawLimit)))
+    : DEFAULT_LIMIT
+
   const record = db.getSessionById(sessionId)
   if (!record) {
     return c.json({ error: 'Session not found' }, 404)
@@ -1110,22 +1274,13 @@ app.get('/api/session-preview/:sessionId', async (c) => {
       return c.json({ error: 'Log file not found' }, 404)
     }
 
-    // Read last 64KB of the file. try/finally guarantees the fd is released
-    // if fd.read() throws (e.g., EIO, file unlinked mid-read, permission drop).
-    const TAIL_BYTES = 64 * 1024
-    const fileSize = stats.size
-    const offset = Math.max(0, fileSize - TAIL_BYTES)
-    const fd = await fs.open(logPath, 'r')
-    let content: string
-    try {
-      const buffer = Buffer.alloc(Math.min(TAIL_BYTES, fileSize))
-      const { bytesRead } = await fd.read(buffer, 0, buffer.length, offset)
-      content = buffer.subarray(0, bytesRead).toString('utf8')
-    } finally {
-      await fd.close()
-    }
-    // Take last 100 lines
-    const lines = content.split('\n').slice(-100)
+    const beforeLineQuery = c.req.query('beforeLine')
+    // Missing or empty means "latest window"; a non-numeric value falls back to
+    // the same (selectLineWindow treats a non-finite cursor as the end).
+    const rawBeforeLine = beforeLineQuery === undefined || beforeLineQuery === ''
+      ? Number.POSITIVE_INFINITY
+      : Number(beforeLineQuery)
+    const lineWindow = await readLogLineWindow(logPath, stats, limit, rawBeforeLine)
 
     return c.json({
       sessionId,
@@ -1133,7 +1288,7 @@ app.get('/api/session-preview/:sessionId', async (c) => {
       projectPath: record.projectPath,
       agentType: record.agentType,
       lastActivityAt: record.lastActivityAt,
-      lines,
+      ...lineWindow,
     })
   } catch (error) {
     const err = error as NodeJS.ErrnoException
