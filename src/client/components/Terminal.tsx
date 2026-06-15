@@ -927,6 +927,16 @@ export default function Terminal({
     }
   }, [containerRef, isiOS, isSelectingText])
 
+  // While the hibernation overlay is up, mark the terminal underneath as `inert`
+  // rather than just `aria-hidden`: inert also drops its xterm helper textarea out
+  // of the tab order, so focus can't land on a hidden, unreachable element.
+  useEffect(() => {
+    const container = containerRef.current
+    if (container) {
+      container.inert = !!hibernatingSession
+    }
+  }, [containerRef, hibernatingSession])
+
   // Use session names as mobile tab labels only when AGENTBOARD_PREFER_WINDOW_NAME is
   // enabled AND every session has a distinct, non-empty name. Otherwise tabs would
   // repeat the same label and numeric indices remain the better signal.
@@ -1051,7 +1061,7 @@ export default function Terminal({
           {hibernatingSession && (
             <button
               onClick={() => onResumeSession(hibernatingSession.sessionId)}
-              className="btn btn-primary h-7 px-2 text-xs"
+              className="btn btn-primary h-7 px-2 text-xs md:hidden"
             >
               Wake
             </button>
@@ -1172,46 +1182,39 @@ export default function Terminal({
           </div>
         )}
         {hibernatingSession && (
-          <div className="absolute inset-0 overflow-y-auto bg-base">
-            <div className="mx-auto flex h-full w-full max-w-4xl flex-col gap-6 p-6">
-              <div className="rounded-2xl border border-border bg-elevated p-6">
-                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-blue-500/15 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-blue-400">
-                        Hibernating
-                      </span>
-                      {hibernatingSession.lastResumeError && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-1 text-[11px] text-amber-400"
-                          title={`Last wake failed: ${hibernatingSession.lastResumeError}`}
-                        >
-                          <AlertTriangleIcon width={12} height={12} />
-                          Wake failed
-                        </span>
-                      )}
-                    </div>
-                    <div>
-                      <h2 className="text-xl font-semibold text-primary">
+          <div className="absolute inset-0 z-10 overflow-y-auto bg-base">
+            <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-4 p-4 md:p-6">
+              <div className="border-b border-border pb-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                      <h2 className="min-w-0 truncate text-lg font-semibold text-primary">
                         {hibernatingDisplayName}
                       </h2>
-                      <p className="mt-1 text-sm text-secondary">
-                        Wake this session to reopen its underlying app and terminal.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-xs text-muted">
+                      <span className="rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-400">
+                        Hibernating
+                      </span>
                       {hibernatingProjectName && (
-                        <span className="rounded-full bg-surface px-2.5 py-1">
+                        <span className="text-muted">
                           {hibernatingProjectName}
                         </span>
                       )}
-                      <span className="rounded-full bg-surface px-2.5 py-1">
+                      <span className="text-muted">
                         Last active {hibernatingLastActivity}
                       </span>
                     </div>
+                    {hibernatingSession.lastResumeError && (
+                      <div
+                        className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-2 py-1 text-xs text-amber-400"
+                        title={`Last wake failed: ${hibernatingSession.lastResumeError}`}
+                      >
+                        <AlertTriangleIcon width={12} height={12} />
+                        Last wake failed
+                      </div>
+                    )}
                     {hibernatingSession.lastUserMessage && (
-                      <p className="max-w-2xl text-sm italic text-muted">
-                        "{hibernatingSession.lastUserMessage}"
+                      <p className="max-h-28 max-w-3xl overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm leading-6 text-secondary">
+                        {hibernatingSession.lastUserMessage}
                       </p>
                     )}
                   </div>
@@ -1219,9 +1222,9 @@ export default function Terminal({
                     <button
                       type="button"
                       onClick={() => onResumeSession(hibernatingSession.sessionId)}
-                      className="btn btn-primary"
+                      className="btn btn-primary hidden md:inline-flex"
                     >
-                      Wake Session
+                      Wake
                     </button>
                     {onMoveToHistory && (
                       <button

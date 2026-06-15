@@ -1,8 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import { parseAndNormalizeAgentLogLine } from '@shared/eventTaxonomy'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  parseAndNormalizeAgentLogLine,
+  inferSourceFamily,
+  type NormalizedEventKind,
+} from '@shared/eventTaxonomy'
+import { asRecord, asString } from '@shared/json'
 import type { AgentSession } from '@shared/types'
 
 const PREVIEW_FETCH_TIMEOUT_MS = 10_000
+const PREVIEW_LINE_LIMIT = 200
 
 interface PreviewData {
   sessionId: string
@@ -10,31 +16,273 @@ interface PreviewData {
   projectPath: string
   agentType: string
   lastActivityAt: string
+  totalLines: number
+  startLine: number
+  endLine: number
+  hasMoreBefore: boolean
   lines: string[]
 }
 
 interface ParsedEntry {
-  type: 'user' | 'assistant' | 'system' | 'other'
+  type: 'user' | 'assistant' | 'system' | 'tool' | 'other'
+  kind: NormalizedEventKind
   content: string
   raw: string
+  lineNumber: number
+  // Index of this entry within its source line. Combined with lineNumber it forms
+  // a stable React key that survives prepending earlier history (positional keys
+  // would shift and force a full remount, collapsing expanded tool entries).
+  seq: number
+  timestamp?: string
+}
+
+interface StructuredLogLine {
+  lineNumber: number
+  parsed: boolean
+  raw: string
+  source: string
+  type: string
+  prominence: 'message' | 'tool' | 'system' | 'plain'
+  role?: string
+  timestamp?: string
+  title: string
+  body?: string
+  details: Array<{ label: string; value: string }>
+}
+
+function extractLogTimestampFromRecord(record: Record<string, unknown>): string | null {
+  const payload = asRecord(record.payload)
+  const message = asRecord(record.message)
+  const timestamp =
+    asString(record.timestamp) ??
+    asString(payload?.timestamp) ??
+    asString(message?.timestamp) ??
+    asString(record.created_at) ??
+    asString(payload?.created_at) ??
+    asString(record.createdAt) ??
+    asString(payload?.createdAt)
+
+  return timestamp && !Number.isNaN(Date.parse(timestamp)) ? timestamp : null
+}
+
+function formatLogTimestamp(timestamp?: string): string | null {
+  if (!timestamp) return null
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return null
+
+  const now = new Date()
+  const sameDay = date.toDateString() === now.toDateString()
+  const sameYear = date.getFullYear() === now.getFullYear()
+
+  const options: Intl.DateTimeFormatOptions = sameDay
+    ? { hour: 'numeric', minute: '2-digit' }
+    : sameYear
+      ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+      : { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }
+
+  return new Intl.DateTimeFormat(undefined, options).format(date)
+}
+
+function compactJson(value: unknown) {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function extractReadableText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item
+        const record = asRecord(item)
+        if (!record) return ''
+        const type = asString(record.type)
+        if (type === 'thinking') return ''
+        if (type === 'tool_use') return `[Tool: ${asString(record.name) ?? 'tool'}]`
+        const text = asString(record.text) ?? asString(record.content) ?? asString(record.output)
+        if (text) return text
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n\n')
+  }
+  const record = asRecord(value)
+  if (!record) return compactJson(value)
+  const type = asString(record.type)
+  if (type === 'thinking') return ''
+  if (type === 'tool_use') return `[Tool: ${asString(record.name) ?? 'tool'}]`
+  const nestedContent = extractReadableText(record.content)
+  if (nestedContent) return nestedContent
+  const nestedMessage = extractReadableText(record.message)
+  if (nestedMessage) return nestedMessage
+  return (
+    asString(record.text) ??
+    asString(record.output) ??
+    ''
+  )
+}
+
+function inferLogSource(record: Record<string, unknown>): string {
+  // Reuse the shared family detection for pi/claude, then layer the transcript
+  // badge's display heuristics on top (any payload.type reads as a Codex signal,
+  // ahead of Claude type detection — matching the original ordering).
+  const family = inferSourceFamily(record)
+  if (family === 'pi') return 'pi'
+  const type = asString(record.type) ?? ''
+  const payloadType = asString(asRecord(record.payload)?.type) ?? ''
+  if (type === 'event_msg' || type === 'response_item' || payloadType) return 'codex'
+  if (family === 'claude' || type === 'tool_result') return 'claude'
+  return 'log'
+}
+
+function parseStructuredLogLine(line: string, lineNumber: number): StructuredLogLine {
+  try {
+    const parsed = JSON.parse(line) as unknown
+    const record = asRecord(parsed)
+    if (!record) {
+      return {
+        lineNumber,
+        parsed: true,
+        raw: line,
+        source: 'json',
+        type: Array.isArray(parsed) ? 'array' : typeof parsed,
+        prominence: 'plain',
+        title: Array.isArray(parsed) ? 'JSON array' : 'JSON value',
+        body: compactJson(parsed),
+        details: [],
+      }
+    }
+
+    const payload = asRecord(record.payload)
+    const message = asRecord(record.message)
+    const type = asString(record.type) ?? 'unknown'
+    const payloadType = asString(payload?.type)
+    const role = asString(record.role) ?? asString(message?.role) ?? asString(payload?.role)
+    const timestamp = extractLogTimestampFromRecord(record)
+    const source = inferLogSource(record)
+    const prominence = getStructuredProminence(
+      type,
+      payloadType ?? undefined,
+      role ?? undefined
+    )
+    const titleParts = [
+      payloadType ? `${type} / ${payloadType}` : type,
+      role,
+    ].filter(Boolean)
+
+    let body =
+      extractReadableText(message?.content) ||
+      extractReadableText(message?.message) ||
+      extractReadableText(payload?.message) ||
+      extractReadableText(payload?.content) ||
+      extractReadableText(payload?.text) ||
+      asString(record.result) ||
+      asString(record.name) ||
+      extractReadableText(record.content) ||
+      extractReadableText(record.text)
+
+    if (type === 'tool_use' && asString(record.name)) {
+      body = `[Tool: ${asString(record.name)}]`
+    }
+
+    const details = [
+      { label: 'uuid', value: asString(record.uuid) ?? '' },
+      { label: 'parent', value: asString(record.parentUuid) ?? '' },
+      { label: 'session', value: asString(record.sessionId) ?? asString(payload?.session_id) ?? '' },
+      { label: 'cwd', value: asString(record.cwd) ?? '' },
+      { label: 'metadata', value: compactJson(record.metadata ?? payload?.metadata) },
+      { label: 'payload', value: payload ? compactJson(payload) : '' },
+    ].filter((detail) => detail.value)
+
+    return {
+      lineNumber,
+      parsed: true,
+      raw: line,
+      source,
+      type: payloadType ? `${type}:${payloadType}` : type,
+      prominence,
+      ...(role ? { role } : {}),
+      ...(timestamp ? { timestamp } : {}),
+      title: titleParts.join(' · '),
+      ...(body ? { body } : {}),
+      details,
+    }
+  } catch {
+    return {
+      lineNumber,
+      parsed: false,
+      raw: line,
+      source: 'text',
+      type: 'plain',
+      prominence: 'plain',
+      title: 'Plain text',
+      body: line,
+      details: [],
+    }
+  }
+}
+
+function getStructuredProminence(
+  type: string,
+  payloadType?: string,
+  role?: string
+): StructuredLogLine['prominence'] {
+  if (role === 'user' || role === 'assistant') return 'message'
+  if (
+    type === 'user' ||
+    type === 'assistant' ||
+    payloadType === 'user_message' ||
+    payloadType === 'assistant_message' ||
+    payloadType === 'message'
+  ) {
+    return 'message'
+  }
+  if (
+    type === 'tool_use' ||
+    type === 'tool_result' ||
+    type === 'result' ||
+    type.includes('tool') ||
+    payloadType?.includes('tool') ||
+    payloadType === 'function_call' ||
+    payloadType === 'function_call_output' ||
+    payloadType === 'custom_tool_call_output'
+  ) {
+    return 'tool'
+  }
+  if (type === 'plain') return 'plain'
+  return 'system'
 }
 
 function mapNormalizedRoleToEntryType(role: string): ParsedEntry['type'] {
   if (role === 'user') return 'user'
   if (role === 'assistant') return 'assistant'
   if (role === 'system') return 'system'
+  if (role === 'tool') return 'tool'
   return 'other'
 }
 
-function parseLogEntry(line: string): ParsedEntry[] {
+function parseLogEntry(line: string, lineNumber: number): ParsedEntry[] {
   const parsed = parseAndNormalizeAgentLogLine(line)
   if (!parsed) return []
+  // Reuse the object parseAndNormalizeAgentLogLine already parsed instead of
+  // re-running JSON.parse on the same line.
+  const record = parsed.parsed ? asRecord(parsed.raw) : null
+  const timestamp = record ? extractLogTimestampFromRecord(record) : null
 
   const entries = parsed.events
-    .map((event) => ({
+    .map((event, seq) => ({
       type: mapNormalizedRoleToEntryType(event.role),
+      kind: event.kind,
       content: event.text.trim(),
       raw: line,
+      lineNumber,
+      seq,
+      ...(timestamp ? { timestamp } : {}),
     }))
     .filter((entry) => entry.content.length > 0)
 
@@ -43,10 +291,188 @@ function parseLogEntry(line: string): ParsedEntry[] {
   }
 
   if (!parsed.parsed && line.trim()) {
-    return [{ type: 'other', content: line.trim(), raw: line }]
+    return [{ type: 'other', kind: 'unknown', content: line.trim(), raw: line, lineNumber, seq: 0 }]
   }
 
   return []
+}
+
+function lineKey(entry: ParsedEntry) {
+  return `${entry.lineNumber}:${entry.seq}`
+}
+
+function entryLabel(entry: ParsedEntry) {
+  if (entry.type === 'user') return 'User'
+  if (entry.type === 'assistant') return 'Assistant'
+  if (entry.type === 'system') return 'System'
+  if (entry.type === 'tool') return 'Tool'
+  return 'Log'
+}
+
+function entryToneClass(entry: ParsedEntry) {
+  if (entry.type === 'user') return 'text-blue-400'
+  if (entry.type === 'assistant') return 'text-emerald-400'
+  if (entry.type === 'system') return 'text-yellow-400'
+  return 'text-muted'
+}
+
+function ToolEntry({ entry }: { entry: ParsedEntry }) {
+  const [expanded, setExpanded] = useState(false)
+  const timestamp = formatLogTimestamp(entry.timestamp)
+  const marker = timestamp ?? `Line ${entry.lineNumber + 1}`
+  const label = entry.kind === 'tool_call' ? entry.content : 'Result'
+
+  return (
+    <div className="rounded-md border border-border bg-surface/40">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs text-muted hover:text-primary"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+      >
+        <span className="min-w-0 truncate">
+          <span
+            className="mr-2 text-[10px] uppercase tracking-wide text-muted"
+            title={timestamp ? `Line ${entry.lineNumber + 1} · ${entry.timestamp}` : undefined}
+          >
+            {marker}
+          </span>
+          {label}
+        </span>
+        <span className="shrink-0 text-[11px]">{expanded ? 'Hide' : 'Show'}</span>
+      </button>
+      {expanded && (
+        <pre className="max-h-80 overflow-auto border-t border-border px-3 py-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-secondary">
+          {entry.content}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function TranscriptEntry({ entry }: { entry: ParsedEntry }) {
+  // tool_result events normalize to empty text and are dropped by parseLogEntry,
+  // so only tool_call and result entries reach the collapsible ToolEntry.
+  if (entry.kind === 'tool_call' || entry.kind === 'result') {
+    return <ToolEntry entry={entry} />
+  }
+  const timestamp = formatLogTimestamp(entry.timestamp)
+  const marker = timestamp ?? `Line ${entry.lineNumber + 1}`
+
+  return (
+    <article className="grid grid-cols-[5.75rem_minmax(0,1fr)] gap-3 border-b border-border/60 py-4 last:border-b-0 sm:grid-cols-[6.75rem_minmax(0,1fr)]">
+      <div className="select-none pt-0.5 text-right">
+        <div className={`text-[11px] font-semibold uppercase tracking-wide ${entryToneClass(entry)}`}>
+          {entryLabel(entry)}
+        </div>
+        <div
+          className="mt-1 text-[10px] tabular-nums text-muted"
+          title={timestamp ? `Line ${entry.lineNumber + 1} · ${entry.timestamp}` : undefined}
+        >
+          {marker}
+        </div>
+      </div>
+      <div className="min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-primary">
+        {entry.content}
+      </div>
+    </article>
+  )
+}
+
+function StructuredLogEntry({ entry }: { entry: StructuredLogLine }) {
+  const [bodyExpanded, setBodyExpanded] = useState(false)
+  const isLowProminence = entry.prominence === 'system' || entry.prominence === 'plain'
+  const collapseBody = entry.prominence === 'tool' && Boolean(entry.body && entry.body.length > 160)
+  const timestamp = formatLogTimestamp(entry.timestamp)
+  const rowClass = isLowProminence
+    ? 'border-border/70 bg-surface/20 opacity-80'
+    : entry.prominence === 'tool'
+      ? 'border-border bg-surface/35'
+      : 'border-border bg-surface/50'
+  const sourceClass = entry.prominence === 'message'
+    ? 'bg-accent/15 text-accent'
+    : 'bg-surface text-muted'
+
+  return (
+    <article className={`rounded-md border ${rowClass}`}>
+      <div className="grid grid-cols-[5.75rem_minmax(0,1fr)] gap-3 px-3 py-2 sm:grid-cols-[6.75rem_minmax(0,1fr)]">
+        <div
+          className="select-none text-right text-[11px] tabular-nums text-muted"
+          title={entry.timestamp ? `Line ${entry.lineNumber + 1} · ${entry.timestamp}` : undefined}
+        >
+          {timestamp ?? `Line ${entry.lineNumber + 1}`}
+        </div>
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${sourceClass}`}>
+              {entry.source}
+            </span>
+            <span className="min-w-0 break-words text-xs font-semibold text-primary">
+              {entry.title}
+            </span>
+          </div>
+          {entry.body && !collapseBody && (
+            <pre className="whitespace-pre-wrap break-words rounded bg-base px-3 py-2 text-xs leading-relaxed text-secondary">
+              {entry.body}
+            </pre>
+          )}
+          {entry.body && collapseBody && (
+            <div className="rounded bg-base px-3 py-2">
+              <button
+                type="button"
+                className="select-none text-[11px] text-muted hover:text-primary"
+                aria-expanded={bodyExpanded}
+                onClick={() => setBodyExpanded((value) => !value)}
+              >
+                Output
+              </button>
+              {bodyExpanded && (
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-secondary">
+                  {entry.body}
+                </pre>
+              )}
+            </div>
+          )}
+          {entry.details.length > 0 && (
+            <details className="group">
+              <summary className="cursor-pointer select-none text-[11px] text-muted hover:text-primary">
+                Details
+              </summary>
+              <div className="mt-2 space-y-2">
+                {entry.details.map((detail) => (
+                  <div key={detail.label}>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                      {detail.label}
+                    </div>
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-base px-3 py-2 text-[11px] leading-relaxed text-muted">
+                      {detail.value}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+async function fetchPreviewWindow(url: string, signal: AbortSignal): Promise<PreviewData> {
+  const response = await fetch(url, { signal })
+  if (!response.ok) {
+    // Defensive: tolerate non-JSON error bodies (e.g., proxy-injected HTML) so we
+    // surface the HTTP status instead of swallowing it in a parse throw.
+    let message = `Failed to load preview (HTTP ${response.status})`
+    try {
+      const data = (await response.json()) as { error?: string }
+      if (data?.error) message = data.error
+    } catch {
+      // Non-JSON — keep default message.
+    }
+    throw new Error(message)
+  }
+  return (await response.json()) as PreviewData
 }
 
 interface SessionPreviewContentProps {
@@ -61,10 +487,16 @@ export default function SessionPreviewContent({
   onStateChange,
 }: SessionPreviewContentProps) {
   const [loading, setLoading] = useState(true)
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [previewData, setPreviewData] = useState<PreviewData | null>(null)
-  const [showRaw, setShowRaw] = useState(false)
+  const [viewMode, setViewMode] = useState<'messages' | 'events'>('messages')
   const contentRef = useRef<HTMLDivElement>(null)
+  const preserveScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
+  // Atomic in-flight guard: a state flag is read from a stale render closure, so a
+  // fast double-click could fire two identical "Load earlier" fetches and prepend
+  // the same lines twice. A ref is updated synchronously and can't be stale.
+  const loadingEarlierRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -78,23 +510,10 @@ export default function SessionPreviewContent({
       setPreviewData(null)
 
       try {
-        const response = await fetch(
-          `/api/session-preview/${session.sessionId}`,
-          { signal: controller.signal }
+        const data = await fetchPreviewWindow(
+          `/api/session-preview/${session.sessionId}?limit=${PREVIEW_LINE_LIMIT}`,
+          controller.signal
         )
-        if (!response.ok) {
-          // Defensive: tolerate non-JSON error bodies (e.g., proxy-injected HTML)
-          // so we surface the HTTP status instead of swallowing it in a parse throw.
-          let message = `Failed to load preview (HTTP ${response.status})`
-          try {
-            const data = (await response.json()) as { error?: string }
-            if (data?.error) message = data.error
-          } catch {
-            // Non-JSON — keep default message.
-          }
-          throw new Error(message)
-        }
-        const data = (await response.json()) as PreviewData
         if (!cancelled) {
           setPreviewData(data)
         }
@@ -120,32 +539,128 @@ export default function SessionPreviewContent({
     }
   }, [session.sessionId])
 
+  const loadEarlier = async () => {
+    if (!previewData || loadingEarlierRef.current || !previewData.hasMoreBefore) return
+    loadingEarlierRef.current = true
+    const scroller = contentRef.current
+    if (scroller) {
+      preserveScrollRef.current = {
+        scrollHeight: scroller.scrollHeight,
+        scrollTop: scroller.scrollTop,
+      }
+    }
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), PREVIEW_FETCH_TIMEOUT_MS)
+    setLoadingEarlier(true)
+    setError(null)
+
+    try {
+      const params = new URLSearchParams({
+        limit: String(PREVIEW_LINE_LIMIT),
+        beforeLine: String(previewData.startLine),
+      })
+      const data = await fetchPreviewWindow(
+        `/api/session-preview/${session.sessionId}?${params.toString()}`,
+        controller.signal
+      )
+      setPreviewData((current) => {
+        if (!current) return data
+        return {
+          ...current,
+          startLine: data.startLine,
+          hasMoreBefore: data.hasMoreBefore,
+          lines: [...data.lines, ...current.lines],
+        }
+      })
+    } catch (err) {
+      preserveScrollRef.current = null
+      if (controller.signal.aborted) {
+        setError('Preview timed out')
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to load preview')
+      }
+    } finally {
+      clearTimeout(timeoutId)
+      loadingEarlierRef.current = false
+      setLoadingEarlier(false)
+    }
+  }
+
   useEffect(() => {
     onStateChange?.({ loading, error })
   }, [error, loading, onStateChange])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const preserve = preserveScrollRef.current
+    if (contentRef.current && preserve) {
+      contentRef.current.scrollTop =
+        contentRef.current.scrollHeight - preserve.scrollHeight + preserve.scrollTop
+      preserveScrollRef.current = null
+      return
+    }
     if (contentRef.current && previewData) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight
     }
-  }, [previewData, showRaw])
+  }, [previewData, viewMode])
 
-  const parsedEntries = previewData?.lines.flatMap(parseLogEntry).slice(-30) ?? []
+  // Parse once per data change instead of on every render (view-mode toggle,
+  // load-earlier spinner, etc.). previewData is replaced wholesale when it changes.
+  const parsedEntries = useMemo(
+    () =>
+      previewData?.lines.flatMap((line, index) =>
+        parseLogEntry(line, previewData.startLine + index)
+      ) ?? [],
+    [previewData]
+  )
+  const structuredLines = useMemo(
+    () =>
+      previewData?.lines.map((line, index) =>
+        parseStructuredLogLine(line, previewData.startLine + index)
+      ) ?? [],
+    [previewData]
+  )
+  const lineRangeLabel = previewData
+    ? previewData.totalLines === 0
+      ? 'No transcript entries'
+      : `Showing ${previewData.lines.length} of ${previewData.totalLines} log entries`
+    : 'Derived from the saved session log.'
 
   return (
     <div className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-elevated ${className}`.trim()}>
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+      <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h3 className="text-sm font-semibold text-primary">Recent Preview</h3>
-          <p className="text-xs text-muted">Derived from the saved session log.</p>
+          <h3 className="text-sm font-semibold text-primary">Transcript</h3>
+          <p className="text-xs text-muted">
+            {lineRangeLabel}
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowRaw((value) => !value)}
-          className={`btn text-xs ${showRaw ? 'btn-primary' : ''}`}
-        >
-          {showRaw ? 'Parsed' : 'Raw'}
-        </button>
+        <div className="inline-flex w-fit rounded-md border border-border bg-base p-0.5">
+          <button
+            type="button"
+            onClick={() => setViewMode('messages')}
+            className={`rounded px-2.5 py-1 text-xs transition-colors ${
+              viewMode === 'messages'
+                ? 'bg-accent text-white'
+                : 'text-muted hover:text-primary'
+            }`}
+            aria-pressed={viewMode === 'messages'}
+          >
+            Messages
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('events')}
+            className={`rounded px-2.5 py-1 text-xs transition-colors ${
+              viewMode === 'events'
+                ? 'bg-accent text-white'
+                : 'text-muted hover:text-primary'
+            }`}
+            aria-pressed={viewMode === 'events'}
+          >
+            Events
+          </button>
+        </div>
       </div>
 
       <div
@@ -162,43 +677,49 @@ export default function SessionPreviewContent({
             {error}
           </div>
         )}
-        {previewData && !showRaw && (
-          <div className="space-y-2">
+        {previewData && viewMode === 'messages' && (
+          <div className="mx-auto flex w-full max-w-4xl flex-col">
+            {previewData.hasMoreBefore && (
+              <button
+                type="button"
+                className="btn mx-auto mb-3"
+                onClick={loadEarlier}
+                disabled={loadingEarlier}
+              >
+                {loadingEarlier ? 'Loading...' : 'Load earlier'}
+              </button>
+            )}
             {parsedEntries.length === 0 ? (
               <div className="py-8 text-center text-muted">
-                No readable content found. Try raw view.
+                No readable messages found. Try Events.
               </div>
             ) : (
-              parsedEntries.map((entry, i) => (
-                <div
-                  key={i}
-                  className={`rounded px-2 py-1 ${
-                    entry.type === 'user'
-                      ? 'bg-blue-500/10 text-blue-400'
-                      : entry.type === 'assistant'
-                        ? 'bg-emerald-500/10 text-emerald-400'
-                        : entry.type === 'system'
-                          ? 'bg-yellow-500/10 text-yellow-400'
-                          : 'text-muted'
-                  }`}
-                >
-                  <span className="whitespace-pre-wrap break-words">
-                    {entry.content.length > 500
-                      ? `${entry.content.slice(0, 500)}...`
-                      : entry.content}
-                  </span>
-                </div>
+              parsedEntries.map((entry) => (
+                <TranscriptEntry key={lineKey(entry)} entry={entry} />
               ))
             )}
           </div>
         )}
-        {previewData && showRaw && (
-          <div className="space-y-1">
-            {previewData.lines.slice(-50).map((line, i) => (
-              <div key={i} className="whitespace-pre-wrap break-all text-muted">
-                {line || ' '}
-              </div>
-            ))}
+        {previewData && viewMode === 'events' && (
+          <div className="mx-auto flex w-full max-w-5xl flex-col gap-2">
+            {previewData.hasMoreBefore && (
+              <button
+                type="button"
+                className="btn mx-auto"
+                onClick={loadEarlier}
+                disabled={loadingEarlier}
+              >
+                {loadingEarlier ? 'Loading...' : 'Load earlier'}
+              </button>
+            )}
+            <div className="space-y-2">
+              {structuredLines.map((entry) => (
+                <StructuredLogEntry
+                  key={`${entry.lineNumber}:${entry.type}:${entry.raw.slice(0, 24)}`}
+                  entry={entry}
+                />
+              ))}
+            </div>
           </div>
         )}
       </div>
