@@ -106,11 +106,14 @@ function checkPortAvailable(port: number): void {
 }
 
 interface LogLineWindow {
-  totalLines: number
+  totalLines: number | null
   startLine: number
   endLine: number
   hasMoreBefore: boolean
   lines: string[]
+  lineKeys?: string[]
+  startByte?: number
+  endByte?: number
 }
 
 // Hibernated session logs are static (the session is no longer writing to them),
@@ -179,8 +182,8 @@ async function readAllLogLines(logPath: string): Promise<string[]> {
   return lines
 }
 
-// Streaming fallback for logs too large to cache: holds only the requested window
-// in memory while counting total lines.
+// Streaming fallback for compatibility with older beforeLine requests. This still
+// scans the whole file, so byte cursors are used for large-log pagination below.
 async function streamLogLineWindow(
   logPath: string,
   limit: number,
@@ -221,14 +224,120 @@ async function streamLogLineWindow(
   }
 }
 
+// Large transcripts should open at the end without counting every preceding
+// line. Read backwards in chunks until we have the requested complete lines, then
+// return byte cursors so the client can page earlier without a linear scan.
+async function readLogLineWindowFromEnd(
+  logPath: string,
+  stats: { size: number },
+  limit: number,
+  beforeByte: number
+): Promise<LogLineWindow> {
+  const endByte = Math.max(0, Math.min(stats.size, Math.trunc(beforeByte)))
+  if (endByte === 0) {
+    return {
+      totalLines: null,
+      startLine: 0,
+      endLine: 0,
+      hasMoreBefore: false,
+      lines: [],
+      startByte: 0,
+      endByte: 0,
+    }
+  }
+
+  const handle = await fs.open(logPath, 'r')
+  const chunkSize = 64 * 1024
+  const chunks: Buffer[] = []
+  let cursor = endByte
+  let newlineCount = 0
+  let sawNonEmptyContent = false
+
+  try {
+    while (cursor > 0 && newlineCount <= limit) {
+      const readSize = Math.min(chunkSize, cursor)
+      const start = cursor - readSize
+      const buffer = Buffer.allocUnsafe(readSize)
+      const { bytesRead } = await handle.read(buffer, 0, readSize, start)
+      if (bytesRead <= 0) break
+      const chunk = buffer.subarray(0, bytesRead)
+      chunks.unshift(chunk)
+      for (const byte of chunk) {
+        if (byte === 0x0a) newlineCount += 1
+        if (byte > 0x20) sawNonEmptyContent = true
+      }
+      cursor = start
+    }
+  } finally {
+    await handle.close()
+  }
+
+  const buffer = Buffer.concat(chunks)
+  let contentEnd = buffer.length
+  if (contentEnd > 0 && buffer[contentEnd - 1] === 0x0a) {
+    contentEnd -= 1
+  }
+
+  const lineStarts = [0]
+  for (let index = 0; index < contentEnd; index += 1) {
+    if (buffer[index] === 0x0a) {
+      lineStarts.push(index + 1)
+    }
+  }
+
+  const selectedStarts = lineStarts.slice(-limit)
+  const selectedLines = selectedStarts.map((startOffset, index) => {
+    const nextStart = selectedStarts[index + 1]
+    let endOffset = nextStart === undefined ? contentEnd : nextStart - 1
+    if (endOffset > startOffset && buffer[endOffset - 1] === 0x0d) {
+      endOffset -= 1
+    }
+    return buffer.subarray(startOffset, endOffset).toString('utf8')
+  })
+
+  if (contentEnd === 0 && !sawNonEmptyContent) {
+    return {
+      totalLines: null,
+      startLine: 0,
+      endLine: 0,
+      hasMoreBefore: cursor > 0,
+      lines: [],
+      startByte: endByte,
+      endByte,
+    }
+  }
+
+  const selectedStartByte = selectedStarts[0] ?? contentEnd
+  const startByte = Math.max(0, cursor + selectedStartByte)
+  const lineKeys = selectedStarts.map((startOffset) => `b:${cursor + startOffset}`)
+
+  return {
+    totalLines: null,
+    startLine: 0,
+    endLine: selectedLines.length,
+    hasMoreBefore: startByte > 0,
+    lines: selectedLines,
+    lineKeys,
+    startByte,
+    endByte,
+  }
+}
+
 async function readLogLineWindow(
   logPath: string,
   stats: { size: number; mtimeMs: number },
   limit: number,
-  beforeLine: number
+  beforeLine: number,
+  beforeByte?: number
 ): Promise<LogLineWindow> {
   // Don't cache oversized logs; stream a bounded window so memory stays in check.
   if (stats.size > MAX_CACHEABLE_LOG_BYTES) {
+    if (beforeByte !== undefined && Number.isFinite(beforeByte)) {
+      return readLogLineWindowFromEnd(logPath, stats, limit, beforeByte)
+    }
+    if (!Number.isFinite(beforeLine)) {
+      return readLogLineWindowFromEnd(logPath, stats, limit, stats.size)
+    }
     return streamLogLineWindow(logPath, limit, beforeLine)
   }
 
@@ -1280,7 +1389,20 @@ app.get('/api/session-preview/:sessionId', async (c) => {
     const rawBeforeLine = beforeLineQuery === undefined || beforeLineQuery === ''
       ? Number.POSITIVE_INFINITY
       : Number(beforeLineQuery)
-    const lineWindow = await readLogLineWindow(logPath, stats, limit, rawBeforeLine)
+    const beforeByteQuery = c.req.query('beforeByte')
+    const rawBeforeByte = beforeByteQuery === undefined || beforeByteQuery === ''
+      ? undefined
+      : Number(beforeByteQuery)
+    const beforeByte = rawBeforeByte !== undefined && Number.isFinite(rawBeforeByte)
+      ? Math.max(0, Math.trunc(rawBeforeByte))
+      : undefined
+    const lineWindow = await readLogLineWindow(
+      logPath,
+      stats,
+      limit,
+      rawBeforeLine,
+      beforeByte
+    )
 
     return c.json({
       sessionId,
