@@ -42,17 +42,19 @@ security → perf/safety → features.
   real-tmux test, `shutdownProcess` (SIGTERM→SIGKILL), bounded tmux-spawn
   timeouts, and the `scripts/test-runner.ts` default-socket + tmpdir sweep backstop.
 
-## Sync state vs upstream (as of merge-base v0.2.50 `fc75e2f`; upstream v0.3.3)
+## Sync state vs upstream
 
-Re-evaluate with `git fetch upstream && git log --oneline master..upstream/master`.
+**Synced through upstream v0.3.3** (cherry-picked onto our tree; we now report
+`version: 0.3.3`). Re-evaluate future drift with
+`git fetch upstream && git log --oneline master..upstream/master`.
 
-| Upstream change | Verdict |
+| Upstream change | Verdict / status |
 |---|---|
-| `9eec9db` terminal-output perf | **skip** — already implemented in our `useTerminal.ts`/`App.tsx` (parallel work). Cherry-picking would conflict for zero gain. |
-| `000f9ad` paste-image allowlist/size-cap | **skip** — already in our `config.ts`/`index.ts` (parallel work). |
-| `11c458c` shell-quote→1.8.4 (GHSA) | **take (defensive)** — we removed `concurrently` so we don't pull shell-quote, but add `"overrides": { "shell-quote": "^1.8.4" }` to our `package.json` as a guard. |
-| `f75202d` agent-aware clipboard image paste (swift NSPasteboard) | **take-with-care / manual-port** — overlaps our diverged `useTerminal.ts` paste handler + osascript `/api/clipboard-file-path`. |
-| `9166cd3`→`2683d02`→`33b125b`→`b52bb0f` hibernated/Codex transcript reader | **take-with-care / merge as a unit** — valuable (incl. `33b125b` tail-read perf for large logs); bulk lands clean (we don't touch `SessionPreviewContent.tsx`/`eventTaxonomy.ts`). Reconcile the dual overlay fix. |
+| `9eec9db` terminal-output perf | **skipped** — already implemented in our `useTerminal.ts`/`App.tsx` (parallel work). Cherry-picking would conflict for zero gain. |
+| `000f9ad` paste-image allowlist/size-cap | **skipped** — already in our `config.ts`/`index.ts` (parallel work). |
+| `11c458c` shell-quote→1.8.4 (GHSA) | **taken (defensive)** — we removed `concurrently` so we don't pull shell-quote; added `"overrides": { "shell-quote": "^1.8.4" }` as a guard. |
+| `f75202d` agent-aware clipboard image paste (swift NSPasteboard) | **taken** — cherry-picked. Dropped upstream's unused `pasteImageExtensionByMime` map (our `/api/paste-image` uses its own `allowedTypes`); added `pasteImageMaxBytes` to the `indexHandlers.test.ts` mock config. |
+| `9166cd3`→`2683d02`→`33b125b`→`b52bb0f` hibernated/Codex transcript reader | **taken** — cherry-picked as a unit (adds `react-markdown`/`remark-*`, `src/shared/json.ts`, `33b125b` tail-read perf). Dual overlay fix reconciled: our `isolate` (Terminal.tsx className) **and** upstream's `inert` (`container.inert`) both present. |
 
 ### Naive-sync hazards (do NOT)
 
