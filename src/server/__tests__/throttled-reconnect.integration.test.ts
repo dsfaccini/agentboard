@@ -38,6 +38,8 @@ import {
   canBindLocalhost,
   createTmuxTmpDir,
   isTmuxAvailable,
+  killTmuxServer,
+  shutdownProcess,
   waitForTmuxWindows,
 } from './testEnvironment'
 
@@ -167,22 +169,7 @@ if (!tmuxAvailable || !localhostBindable) {
 
     afterAll(async () => {
       if (serverProcess) {
-        try {
-          serverProcess.kill()
-          await serverProcess.exited
-        } catch {
-          // ignore
-        }
-      }
-
-      try {
-        Bun.spawnSync(['tmux', 'kill-session', '-t', sessionName], {
-          stdout: 'ignore',
-          stderr: 'ignore',
-          env: tmuxEnv(),
-        })
-      } catch {
-        // ignore
+        await shutdownProcess(serverProcess)
       }
 
       for (const f of [dbPath, logFilePath]) {
@@ -194,6 +181,7 @@ if (!tmuxAvailable || !localhostBindable) {
       }
 
       if (tmuxTmpDir) {
+        killTmuxServer(tmuxTmpDir)
         try {
           fs.rmSync(tmuxTmpDir, { recursive: true, force: true })
         } catch {

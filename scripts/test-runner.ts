@@ -6,6 +6,21 @@ const args = process.argv.slice(2)
 const skipIsolated = args.includes('--skip-isolated')
 const passthroughArgs = args.filter((arg) => arg !== '--skip-isolated')
 
+const TEST_TMUX_SESSION_PREFIXES: readonly string[] = [
+  'agentboard-test-',
+  'agentboard-hibernate-test-',
+  'agentboard-dblattach-',
+  'agentboard-throttle-',
+  'agentboard-slug-test-',
+]
+
+const TEST_TMUX_TMPDIR_PREFIXES: readonly string[] = [
+  'agentboard-tmux-',
+  'agentboard-tt-',
+]
+
+let processCleanupRan = false
+
 function createTempLogDirs() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentboard-tests-'))
   const claudeDir = path.join(tempRoot, 'claude')
@@ -15,18 +30,131 @@ function createTempLogDirs() {
   return { tempRoot, claudeDir, codexDir }
 }
 
-async function runCommand(cmd: string[], env: NodeJS.ProcessEnv) {
-  const proc = Bun.spawn({
-    cmd,
-    env,
-    stdout: 'inherit',
-    stderr: 'inherit',
-  })
-  const exitCode = await proc.exited
-  if (exitCode !== 0) {
-    throw new Error(`Command failed (${exitCode}): ${cmd.join(' ')}`)
+function isTestTmuxSession(sessionName: string): boolean {
+  return TEST_TMUX_SESSION_PREFIXES.some((prefix) => sessionName.startsWith(prefix))
+}
+
+function isTestTmuxTmpDir(entryName: string): boolean {
+  return TEST_TMUX_TMPDIR_PREFIXES.some((prefix) => entryName.startsWith(prefix))
+}
+
+function listTmuxSessions(env?: NodeJS.ProcessEnv): string[] {
+  try {
+    const result = Bun.spawnSync(
+      ['tmux', 'list-sessions', '-F', '#{session_name}'],
+      { stdout: 'pipe', stderr: 'ignore', env, timeout: 5000 }
+    )
+    if (result.exitCode !== 0) {
+      return []
+    }
+    return result.stdout
+      .toString()
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+  } catch {
+    return []
   }
 }
+
+function killTmuxSession(sessionName: string, env?: NodeJS.ProcessEnv): void {
+  try {
+    Bun.spawnSync(['tmux', 'kill-session', '-t', sessionName], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+      env,
+      timeout: 5000,
+    })
+  } catch {
+    // Best-effort cleanup only; test failures should come from the test run.
+  }
+}
+
+function cleanupDefaultTmuxSessions(): void {
+  for (const sessionName of listTmuxSessions()) {
+    if (isTestTmuxSession(sessionName)) {
+      killTmuxSession(sessionName)
+    }
+  }
+}
+
+function cleanupTmuxTmpDir(tmuxTmpDir: string): void {
+  const env = {
+    ...process.env,
+    TMUX_TMPDIR: tmuxTmpDir,
+  }
+  for (const sessionName of listTmuxSessions(env)) {
+    killTmuxSession(sessionName, env)
+  }
+  fs.rmSync(tmuxTmpDir, { recursive: true, force: true })
+}
+
+function cleanupTmuxTmpDirs(): void {
+  const roots = new Set(['/tmp', os.tmpdir()])
+  for (const root of roots) {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !isTestTmuxTmpDir(entry.name)) {
+        continue
+      }
+      try {
+        cleanupTmuxTmpDir(path.join(root, entry.name))
+      } catch {
+        // Keep scanning; one stale socket dir should not block the rest.
+      }
+    }
+  }
+}
+
+function cleanupTmuxTestArtifacts(): void {
+  try {
+    cleanupDefaultTmuxSessions()
+    cleanupTmuxTmpDirs()
+  } catch {
+    // Teardown runs as a backstop for abandoned tmux resources; it must not
+    // mask the original test failure.
+  }
+}
+
+function cleanupTmuxTestArtifactsOnce(): void {
+  if (processCleanupRan) {
+    return
+  }
+  processCleanupRan = true
+  cleanupTmuxTestArtifacts()
+}
+
+async function runCommand(cmd: string[], env: NodeJS.ProcessEnv) {
+  try {
+    const proc = Bun.spawn({
+      cmd,
+      env,
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    const exitCode = await proc.exited
+    if (exitCode !== 0) {
+      throw new Error(`Command failed (${exitCode}): ${cmd.join(' ')}`)
+    }
+  } finally {
+    cleanupTmuxTestArtifacts()
+  }
+}
+
+process.on('exit', cleanupTmuxTestArtifactsOnce)
+process.on('SIGINT', () => {
+  cleanupTmuxTestArtifactsOnce()
+  process.exit(130)
+})
+process.on('SIGTERM', () => {
+  cleanupTmuxTestArtifactsOnce()
+  process.exit(143)
+})
 
 async function main() {
   const { tempRoot, claudeDir, codexDir } = createTempLogDirs()
@@ -50,6 +178,8 @@ async function main() {
   }
 
   try {
+    cleanupTmuxTestArtifacts()
+
     // Tests that either mutate globals or are sensitive to global mutations
     // must run in a separate process so they don't race with other test files.
     // PipePaneTerminalProxy reads Bun.spawnSync at construction time — if another
@@ -130,6 +260,7 @@ async function main() {
     }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
+    cleanupTmuxTestArtifactsOnce()
   }
 }
 

@@ -35,6 +35,57 @@ export function createTmuxTmpDir(prefix = 'agentboard-tmux-'): string {
   return fs.mkdtempSync(path.join(baseDir, prefix))
 }
 
+/**
+ * Tear down the entire isolated tmux server living in `tmuxTmpDir`. Unlike
+ * `kill-session` on the base session, this also kills server-spawned grouped
+ * `…-ws-<uuid>` sessions and the daemonized tmux server process itself, so no
+ * pty-holding session survives the test. The socket is bound to `tmuxTmpDir`,
+ * so this can never touch the developer's default tmux server.
+ */
+/**
+ * Stop a spawned process deterministically: SIGTERM, then escalate to SIGKILL
+ * if it doesn't exit within `timeoutMs`. Avoids an unbounded `await
+ * proc.exited` when the process's graceful-shutdown handler stalls.
+ */
+export async function shutdownProcess(
+  proc: ReturnType<typeof Bun.spawn>,
+  timeoutMs = 3000
+): Promise<void> {
+  try {
+    proc.kill()
+  } catch {
+    return
+  }
+
+  const exited = proc.exited.catch(() => {})
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    setTimeout(() => resolve('timeout'), timeoutMs)
+  })
+
+  if ((await Promise.race([exited, timedOut])) === 'timeout') {
+    try {
+      proc.kill('SIGKILL')
+    } catch {
+      return
+    }
+    await proc.exited.catch(() => {})
+  }
+}
+
+export function killTmuxServer(tmuxTmpDir: string): void {
+  try {
+    Bun.spawnSync(['tmux', 'kill-server'], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+      env: { ...process.env, TMUX_TMPDIR: tmuxTmpDir },
+      // Bound the call so a wedged tmux server can't hang teardown.
+      timeout: 5000,
+    })
+  } catch {
+    // Best-effort teardown backstop; never mask the test result.
+  }
+}
+
 type TmuxWindowListResult = {
   exitCode: number
   stderr: string

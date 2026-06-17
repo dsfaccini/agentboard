@@ -8,6 +8,8 @@ import {
   canBindLocalhost,
   createTmuxTmpDir,
   isTmuxAvailable,
+  killTmuxServer,
+  shutdownProcess,
 } from './testEnvironment'
 
 const tmuxAvailable = isTmuxAvailable()
@@ -125,16 +127,8 @@ if (!tmuxAvailable || !localhostBindable) {
 
     afterAll(async () => {
       await stopServer()
-      try {
-        Bun.spawnSync(['tmux', 'kill-session', '-t', sessionName], {
-          stdout: 'ignore',
-          stderr: 'ignore',
-          env: tmuxEnv(),
-        })
-      } catch {
-        // ignore cleanup errors
-      }
       if (tmuxTmpDir) {
+        killTmuxServer(tmuxTmpDir)
         try {
           fs.rmSync(tmuxTmpDir, { recursive: true, force: true })
         } catch {
@@ -386,27 +380,3 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function shutdownProcess(
-  proc: ReturnType<typeof Bun.spawn>,
-  timeoutMs = 3000
-) {
-  try {
-    proc.kill()
-  } catch {
-    return
-  }
-
-  const exited = proc.exited.catch(() => {})
-  const timedOut = new Promise<'timeout'>((resolve) => {
-    setTimeout(() => resolve('timeout'), timeoutMs)
-  })
-
-  if ((await Promise.race([exited, timedOut])) === 'timeout') {
-    try {
-      proc.kill('SIGKILL')
-    } catch {
-      return
-    }
-    await proc.exited.catch(() => {})
-  }
-}

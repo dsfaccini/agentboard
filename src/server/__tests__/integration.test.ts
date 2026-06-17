@@ -3,7 +3,13 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import os from 'node:os'
-import { canBindLocalhost, isTmuxAvailable } from './testEnvironment'
+import {
+  canBindLocalhost,
+  createTmuxTmpDir,
+  isTmuxAvailable,
+  killTmuxServer,
+  shutdownProcess,
+} from './testEnvironment'
 
 const tmuxAvailable = isTmuxAvailable()
 const localhostBindable = canBindLocalhost()
@@ -27,6 +33,10 @@ if (!tmuxAvailable || !localhostBindable) {
     )
     let serverProcess: ReturnType<typeof Bun.spawn> | null = null
     let port = 0
+    // Isolate every tmux session this test (and its spawned server) creates on a
+    // private socket so base + `…-ws-<uuid>` sessions can never leak onto the
+    // developer's default tmux server and exhaust the machine-wide pty pool.
+    const tmuxTmpDir = createTmuxTmpDir()
 
     beforeAll(async () => {
       port = await getFreePort()
@@ -35,6 +45,7 @@ if (!tmuxAvailable || !localhostBindable) {
         cwd: process.cwd(),
         env: {
           ...process.env,
+          TMUX_TMPDIR: tmuxTmpDir,
           PORT: String(port),
           TMUX_SESSION: sessionName,
           DISCOVER_PREFIXES: '',
@@ -53,19 +64,12 @@ if (!tmuxAvailable || !localhostBindable) {
 
     afterAll(async () => {
       if (serverProcess) {
-        try {
-          serverProcess.kill()
-          await serverProcess.exited
-        } catch {
-          // ignore shutdown errors
-        }
+        await shutdownProcess(serverProcess)
       }
 
+      killTmuxServer(tmuxTmpDir)
       try {
-        Bun.spawnSync(['tmux', 'kill-session', '-t', sessionName], {
-          stdout: 'ignore',
-          stderr: 'ignore',
-        })
+        fs.rmSync(tmuxTmpDir, { recursive: true, force: true })
       } catch {
         // ignore cleanup errors
       }
