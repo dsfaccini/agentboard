@@ -1,6 +1,10 @@
 # AGENTS.md
 
 - Bun 1.x, TypeScript 5.x, React 18, Hono, xterm.js, Zustand, Tailwind.
+- This is a **fork** of `gbasin/agentboard`. Read [FORK.md](./FORK.md) before
+  syncing with upstream, evaluating an upstream change, or touching tmux/pty
+  lifecycle code — it lists what's ours (preserve it), the sync verdicts, and the
+  pty-leak watch-list from the 2026-06-16 incident.
 
 ## Commands
 
