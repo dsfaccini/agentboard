@@ -175,6 +175,16 @@ async function main() {
     // would otherwise be silently skipped. Tests that need specific skip
     // behavior pass patterns explicitly via the matcher API.
     AGENTBOARD_SKIP_MATCHING_PATTERNS: '',
+    // Integration tests fetch their own spawned localhost servers. If a
+    // package-manager proxy is set (e.g. Socket Firewall injects HTTP(S)_PROXY
+    // with no NO_PROXY), Bun's fetch routes loopback through it and hangs
+    // waitForHealth. Exempt loopback; real proxied hosts aren't affected.
+    NO_PROXY: ['localhost', '127.0.0.1', '::1', process.env.NO_PROXY]
+      .filter(Boolean)
+      .join(','),
+    no_proxy: ['localhost', '127.0.0.1', '::1', process.env.no_proxy]
+      .filter(Boolean)
+      .join(','),
   }
 
   try {
