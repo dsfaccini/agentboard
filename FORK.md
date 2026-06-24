@@ -7,6 +7,23 @@ upstream change, or touching tmux/pty lifecycle code.
 - We sync **from** upstream (cherry-pick / port / merge). We never push our
   `master` to upstream. Fork-specific docs like this one live only on our master.
 
+## How we work (this fork)
+
+- **Commit straight to `master`. No PRs in our fork** — David merges everything
+  onto our own `master`. Use a short-lived branch only if a change needs staging
+  (e.g. a risky multi-commit sync), then fast-forward `master` and delete it.
+- **Push `master` to `origin` when asked.** Never force-push.
+- **Syncing upstream:** cherry-pick or merge upstream commits onto `master`,
+  keeping the "ours" list below intact; resolve `package.json` version to the
+  upstream value once a sync is complete. See the sync playbook below.
+- **Tests:** `bun run test` (the runner injects `NO_PROXY` for loopback so the
+  integration tests work behind David's `sfw` package-manager proxy). A direct
+  `bun test <file>` bypasses that and will hang `waitForHealth` under `sfw` —
+  prefer `bun run test`, or set `NO_PROXY=localhost,127.0.0.1,::1`.
+- **Known-flaky:** `double-attach › "second terminal-attach within 500ms …"`
+  fails on a `waitForMessageQuiescence` timeout in this environment (fails the
+  same on upstream's original) — not a regression; don't chase it blind.
+
 ## Goals (in priority order)
 
 1. **Safety** — no resource leaks (esp. pty/tmux, see incident below), enforced
