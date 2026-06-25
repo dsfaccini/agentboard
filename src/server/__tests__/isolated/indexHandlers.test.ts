@@ -570,6 +570,12 @@ function createWs() {
       userAgent: 'test-agent',
       terminalHost: null as string | null,
       terminalAttachSeq: 0,
+      lastAttachKey: null as string | null,
+      lastAttachTs: 0,
+      clipboardPollTimer: null as ReturnType<typeof setInterval> | null,
+      clipboardPollInFlight: false,
+      lastClipboardBufferKey: null as string | null,
+      clipboardBufferArmedUntil: 0,
     },
     send: (payload: string) => {
       sent.push(JSON.parse(payload) as ServerMessage)
@@ -2435,6 +2441,115 @@ describe('server message handlers', () => {
     expect(outputCountAfter).toBe(outputCount)
   })
 
+  test('offers changed tmux paste buffer for the active local terminal', async () => {
+    const { serveOptions, registryInstance } = await loadIndex()
+    registryInstance.sessions = [baseSession]
+
+    let intervalCallback: (() => void) | null = null
+    const originalSetIntervalForTest = globalThis.setInterval
+    const originalClearInterval = globalThis.clearInterval
+    globalThis.setInterval = ((callback: TimerHandler) => {
+      intervalCallback = callback as () => void
+      return 123 as unknown as ReturnType<typeof setInterval>
+    }) as unknown as typeof globalThis.setInterval
+    globalThis.clearInterval = (() => {}) as typeof globalThis.clearInterval
+
+    let bufferCreated = 1
+    spawnSyncImpl = ((...args: Parameters<typeof Bun.spawnSync>) => {
+      const command = Array.isArray(args[0]) ? args[0] : [String(args[0])]
+      const tmuxArgs = getTmuxArgs(command as string[])
+      if (tmuxArgs[0] === 'list-buffers') {
+        return {
+          exitCode: 0,
+          stdout: Buffer.from(tmuxLine('buffer0', String(bufferCreated), '18') + '\n'),
+          stderr: Buffer.from(''),
+        } as ReturnType<typeof Bun.spawnSync>
+      }
+      if (tmuxArgs[0] === 'show-buffer') {
+        return {
+          exitCode: 0,
+          stdout: Buffer.from('copied-from-tmux'),
+          stderr: Buffer.from(''),
+        } as ReturnType<typeof Bun.spawnSync>
+      }
+      if (tmuxArgs[0] === 'capture-pane') {
+        return {
+          exitCode: 0,
+          stdout: Buffer.from('visible pane line\n'),
+          stderr: Buffer.from(''),
+        } as ReturnType<typeof Bun.spawnSync>
+      }
+      return {
+        exitCode: 0,
+        stdout: Buffer.from(''),
+        stderr: Buffer.from(''),
+      } as ReturnType<typeof Bun.spawnSync>
+    }) as typeof Bun.spawnSync
+
+    try {
+      const { ws, sent } = createWs()
+      const websocket = serveOptions.websocket
+      if (!websocket) {
+        throw new Error('WebSocket handlers not configured')
+      }
+
+      websocket.open?.(ws as never)
+      websocket.message?.(
+        ws as never,
+        JSON.stringify({
+          type: 'terminal-attach',
+          sessionId: baseSession.id,
+          tmuxTarget: baseSession.tmuxWindow,
+        })
+      )
+
+      await new Promise((r) => setTimeout(r, 0))
+      await new Promise((r) => setTimeout(r, 0))
+
+      const pollClipboard = intervalCallback as (() => void) | null
+      if (!pollClipboard) {
+        throw new Error('Expected clipboard poll interval')
+      }
+      expect(
+        sent.some((message) => message.type === 'clipboard-offer')
+      ).toBe(false)
+
+      bufferCreated = 2
+      pollClipboard()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(
+        sent.some((message) => message.type === 'clipboard-offer')
+      ).toBe(false)
+
+      websocket.message?.(
+        ws as never,
+        JSON.stringify({
+          type: 'terminal-input',
+          sessionId: baseSession.id,
+          data: '\x1b[<0;10;4M\x1b[<32;11;4M\x1b[<0;11;4m',
+        })
+      )
+      bufferCreated = 3
+      pollClipboard()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(sent).toContainEqual({
+        type: 'clipboard-offer',
+        sessionId: baseSession.id,
+        text: 'copied-from-tmux',
+        source: 'tmux-buffer',
+      })
+
+      const offerCount = sent.filter((message) => message.type === 'clipboard-offer').length
+      bufferCreated = 4
+      pollClipboard()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(sent.filter((message) => message.type === 'clipboard-offer')).toHaveLength(offerCount)
+    } finally {
+      globalThis.setInterval = originalSetIntervalForTest
+      globalThis.clearInterval = originalClearInterval
+    }
+  })
+
   test('session-only attach replays the current grouped view and keeps copy-mode targeting aligned in pty mode', async () => {
     const { serveOptions, registryInstance } = await loadIndex()
     registryInstance.sessions = [baseSession]
@@ -2459,9 +2574,11 @@ describe('server message handlers', () => {
       }
       if (tmuxArgs[0] === 'display-message') {
         copyModeTarget = tmuxArgs[3] ?? ''
+        // Format: pane_in_mode,alternate_on,mouse_any_flag — here: a fullscreen app
+        // (not in copy-mode, alt screen on, app owns the mouse).
         return {
           exitCode: 0,
-          stdout: Buffer.from('0\n'),
+          stdout: Buffer.from('0,1,1\n'),
           stderr: Buffer.from(''),
         } as ReturnType<typeof Bun.spawnSync>
       }
@@ -2511,6 +2628,17 @@ describe('server message handlers', () => {
       JSON.stringify({ type: 'tmux-check-copy-mode', sessionId: baseSession.id })
     )
     expect(copyModeTarget).toBe(groupedTarget)
+
+    // The fullscreen flags from tmux propagate to the client (appMouse drives the
+    // client's decision to stop hijacking mouse events into copy-mode).
+    const fullscreenStatus = sent.find(
+      (message) => message.type === 'tmux-copy-mode-status'
+    )
+    expect(fullscreenStatus).toMatchObject({
+      inCopyMode: false,
+      altScreen: true,
+      appMouse: true,
+    })
   })
 
   test('terminal attach continues when local history capture times out', async () => {
@@ -2625,9 +2753,10 @@ describe('server message handlers', () => {
       }
       if (tmuxArgs[0] === 'display-message') {
         displayTarget = tmuxArgs[3] ?? ''
+        // Format: pane_in_mode,alternate_on,mouse_any_flag — classic copy-mode here.
         return {
           exitCode: 0,
-          stdout: Buffer.from('1\n'),
+          stdout: Buffer.from('1,0,0\n'),
           stderr: Buffer.from(''),
         } as ReturnType<typeof Bun.spawnSync>
       }
@@ -2662,6 +2791,8 @@ describe('server message handlers', () => {
       type: 'tmux-copy-mode-status',
       sessionId: baseSession.id,
       inCopyMode: true,
+      altScreen: false,
+      appMouse: false,
     })
   })
 

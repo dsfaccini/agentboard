@@ -23,6 +23,7 @@ import SessionDrawer from './SessionDrawer'
 import SessionPreviewContent from './SessionPreviewContent'
 import { PlusIcon, XCloseIcon, DotsVerticalIcon, Menu01Icon } from '@untitledui-icons/react/line'
 import AlertTriangleIcon from '@untitledui-icons/react/line/esm/AlertTriangleIcon'
+import Copy01Icon from '@untitledui-icons/react/line/esm/Copy01Icon'
 import Edit05Icon from '@untitledui-icons/react/line/esm/Edit05Icon'
 import Moon01Icon from '@untitledui-icons/react/line/esm/Moon01Icon'
 import Settings01Icon from '@untitledui-icons/react/line/esm/Settings01Icon'
@@ -156,7 +157,17 @@ export default function Terminal({
     !session.remote &&
     !!session.agentSessionId?.trim()
 
-  const { containerRef, terminalRef, inTmuxCopyModeRef, setTmuxCopyMode, isSwitching } = useTerminal({
+  const {
+    containerRef,
+    terminalRef,
+    inTmuxCopyModeRef,
+    appMouseRef,
+    setTmuxCopyMode,
+    isSwitching,
+    pendingClipboardOffer,
+    copyPendingClipboardOffer,
+    dismissPendingClipboardOffer,
+  } = useTerminal({
     sessionId: session?.id ?? null,
     tmuxTarget: session?.tmuxWindow ?? null,
     agentType: session?.agentType,
@@ -546,6 +557,9 @@ export default function Terminal({
     let accumulatedDelta = 0
     let lineHeightPx = Math.round(fontSize * lineHeight)
     let momentumAnimationId: number | null = null
+    let longPressTimer: ReturnType<typeof setTimeout> | null = null
+    let remoteSelectionActive = false
+    let remoteSelectionLastCell: { col: number; row: number } | null = null
 
     const resolveLineHeight = () => {
       const computed = window.getComputedStyle(container)
@@ -559,6 +573,31 @@ export default function Terminal({
 
     const getTextarea = () =>
       container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+
+    const getTouchCell = (touch: Pick<Touch, 'clientX' | 'clientY'>): { col: number; row: number } | null => {
+      const terminal = terminalRef.current
+      if (!terminal) return null
+
+      const root = container.querySelector('.xterm') as HTMLElement | null
+      const screen = root?.querySelector('.xterm-screen') as HTMLElement | null
+      const screenRect = screen?.getBoundingClientRect()
+      if (!screenRect || screenRect.width <= 0 || screenRect.height <= 0) return null
+
+      const cellW = screenRect.width / terminal.cols
+      const cellH = screenRect.height / terminal.rows
+      if (cellW <= 0 || cellH <= 0) return null
+
+      const col = Math.min(
+        terminal.cols,
+        Math.max(1, Math.floor((touch.clientX - screenRect.left) / cellW) + 1)
+      )
+      const row = Math.min(
+        terminal.rows,
+        Math.max(1, Math.floor((touch.clientY - screenRect.top) / cellH) + 1)
+      )
+
+      return { col, row }
+    }
 
     const disableTextareaIfIdle = () => {
       const current = getTextarea()
@@ -599,6 +638,29 @@ export default function Terminal({
       velocity = 0
     }
 
+    const clearLongPressTimer = () => {
+      if (longPressTimer !== null) {
+        clearTimeout(longPressTimer)
+        longPressTimer = null
+      }
+    }
+
+    const sendMouseToApp = (
+      button: number,
+      cell: { col: number; row: number },
+      final: 'M' | 'm'
+    ): boolean => {
+      const currentSessionId = sessionIdRef.current
+      if (!currentSessionId) return false
+
+      sendMessageRef.current({
+        type: 'terminal-input',
+        sessionId: currentSessionId,
+        data: `\x1b[<${button};${cell.col};${cell.row}${final}`,
+      })
+      return true
+    }
+
     // Send scroll events to tmux as SGR mouse sequences (like desktop wheel handler)
     // Returns true if scrolled up (into history), false otherwise
     const sendScrollToTmux = (lines: number): boolean => {
@@ -625,14 +687,65 @@ export default function Terminal({
       }
 
       // Only enter copy-mode when scrolling UP (into history), not when scrolling down
-      if (scrolledUp) {
+      if (scrolledUp && !appMouseRef.current) {
         setTmuxCopyMode(true)
       }
 
       return scrolledUp
     }
 
+    const sendTapClickToApp = (touch: Touch): boolean => {
+      const currentSessionId = sessionIdRef.current
+      const cell = getTouchCell(touch)
+      if (!currentSessionId || !cell) return false
+
+      sendMessageRef.current({
+        type: 'terminal-input',
+        sessionId: currentSessionId,
+        data: `\x1b[<0;${cell.col};${cell.row}M\x1b[<0;${cell.col};${cell.row}m`,
+      })
+      return true
+    }
+
+    const startRemoteSelection = (point: Pick<Touch, 'clientX' | 'clientY'>): boolean => {
+      if (!isiOS || !appMouseRef.current) return false
+      const cell = getTouchCell(point)
+      if (!cell) return false
+
+      remoteSelectionActive = true
+      remoteSelectionLastCell = cell
+      disableTextareaIfIdle()
+      triggerHaptic()
+      return sendMouseToApp(0, cell, 'M')
+    }
+
+    const dragRemoteSelection = (touch: Touch): boolean => {
+      const cell = getTouchCell(touch)
+      if (!cell) return false
+      if (
+        remoteSelectionLastCell &&
+        remoteSelectionLastCell.col === cell.col &&
+        remoteSelectionLastCell.row === cell.row
+      ) {
+        return true
+      }
+
+      remoteSelectionLastCell = cell
+      return sendMouseToApp(32, cell, 'M')
+    }
+
+    const endRemoteSelection = (touch: Touch | undefined): boolean => {
+      const cell = touch ? getTouchCell(touch) : remoteSelectionLastCell
+      remoteSelectionActive = false
+      remoteSelectionLastCell = null
+      if (!cell) return false
+      return sendMouseToApp(0, cell, 'm')
+    }
+
     const resetTouchState = () => {
+      clearLongPressTimer()
+      remoteSelectionActive = false
+      remoteSelectionLastCell = null
       lastTouchY = null
       velocity = 0
       accumulatedDelta = 0
@@ -684,6 +797,16 @@ export default function Terminal({
 
         // Enable textarea on touch start so iOS long-press paste menu works
         enableTextarea()
+
+        if (isiOS && appMouseRef.current) {
+          const startPoint = { clientX: touch.clientX, clientY: touch.clientY }
+          longPressTimer = setTimeout(() => {
+            longPressTimer = null
+            if (hasMoved || isEdgeSwipingRef.current || isDrawerOpen) return
+            if (isSelectingTextRef.current || hasActiveSelection()) return
+            startRemoteSelection(startPoint)
+          }, LONG_PRESS_MS)
+        }
       }
     }
 
@@ -697,6 +820,20 @@ export default function Terminal({
         return
       }
 
+      const now = performance.now()
+      const touch = e.touches[0]
+      const x = touch.clientX
+      const y = touch.clientY
+
+      if (remoteSelectionActive) {
+        e.preventDefault()
+        e.stopPropagation()
+        dragRemoteSelection(touch)
+        lastTouchY = y
+        lastTouchTime = now
+        return
+      }
+
       if (isSelectingTextRef.current || hasActiveSelection()) {
         resetTouchState()
         return
@@ -705,15 +842,11 @@ export default function Terminal({
       e.preventDefault()
       e.stopPropagation()
 
-      const now = performance.now()
-      const touch = e.touches[0]
-      const x = touch.clientX
-      const y = touch.clientY
-
       const dx = Math.abs(x - touchStartPos.x)
       const dy = Math.abs(y - touchStartPos.y)
       if (!hasMoved && (dx > TAP_MOVE_THRESHOLD || dy > TAP_MOVE_THRESHOLD)) {
         hasMoved = true
+        clearLongPressTimer()
         disableTextareaIfIdle()
       }
 
@@ -739,6 +872,16 @@ export default function Terminal({
     const handleTouchEnd = (e: TouchEvent) => {
       const endVelocity = velocity
       const touchDuration = performance.now() - touchStartTime
+      clearLongPressTimer()
+
+      if (remoteSelectionActive) {
+        endRemoteSelection(e.changedTouches[0])
+        resetTouchState()
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+
       resetTouchState()
 
       // Skip if edge swiping (opening drawer) or drawer is open - let document handler process
@@ -763,6 +906,14 @@ export default function Terminal({
 
       if (!hasMoved) {
         if (isiOS && touchDuration >= LONG_PRESS_MS) return
+        if (appMouseRef.current) {
+          const touch = e.changedTouches[0]
+          if (touch && sendTapClickToApp(touch)) {
+            e.preventDefault()
+            e.stopPropagation()
+            return
+          }
+        }
         // If in copy-mode, prevent tap from reaching xterm.js (which would send click to tmux and exit copy-mode)
         if (inTmuxCopyModeRef.current) {
           e.preventDefault()
@@ -829,6 +980,7 @@ export default function Terminal({
       container.removeEventListener('touchmove', handleTouchMove, moveOptions)
       container.removeEventListener('touchend', handleTouchEnd, endOptions)
       container.removeEventListener('mousedown', handleMouseDown, mouseOptions)
+      clearLongPressTimer()
       // Re-enable textarea on cleanup
       const cleanupTextarea = getTextarea()
       if (cleanupTextarea) {
@@ -1169,6 +1321,32 @@ export default function Terminal({
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
             Loading
+          </div>
+        )}
+        {pendingClipboardOffer && session && (
+          <div className={`absolute ${showScrollButton && !isSelectingText ? 'bottom-20' : 'bottom-8'} left-1/2 z-30 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-lg border border-border bg-elevated/95 px-2 py-2 shadow-lg backdrop-blur-sm md:left-auto md:right-4 md:translate-x-0`}>
+            <span className="max-w-[12rem] truncate text-xs text-secondary md:max-w-[18rem]">
+              Selection ready
+            </span>
+            <button
+              type="button"
+              onClick={copyPendingClipboardOffer}
+              className="flex h-8 shrink-0 items-center justify-center gap-1.5 rounded bg-accent px-2.5 text-xs font-medium text-white hover:bg-accent/90 active:scale-95 transition-all"
+              title="Copy selection"
+              aria-label="Copy selection"
+            >
+              <Copy01Icon width={14} height={14} />
+              Copy
+            </button>
+            <button
+              type="button"
+              onClick={dismissPendingClipboardOffer}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-border text-secondary hover:bg-hover hover:text-primary active:scale-95 transition-all"
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
+              <XCloseIcon width={14} height={14} />
+            </button>
           </div>
         )}
         {!session && (

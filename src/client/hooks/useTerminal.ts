@@ -7,9 +7,10 @@ import { ClipboardAddon, type ClipboardSelectionType, type IClipboardProvider } 
 import { SearchAddon } from '@xterm/addon-search'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { ProgressAddon } from '@xterm/addon-progress'
-import type { AgentType, SendClientMessage, ServerMessageWithDiagnostics, SubscribeServerMessage } from '@shared/types'
+import type { AgentType, ClipboardOfferSource, SendClientMessage, ServerMessageWithDiagnostics, SubscribeServerMessage } from '@shared/types'
 import { clientLog } from '../utils/clientLog'
 import type { ConnectionStatus } from '../stores/sessionStore'
+import { copyText } from '../utils/copyText'
 
 // Module-level snapshot cache: sessionId → serialized terminal content.
 // Survives component remounts and avoids stale-closure issues in effects.
@@ -70,6 +71,8 @@ const getIsMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod
 /** Empty bracket paste sequence — signals a paste event without text content. */
 const BRACKET_PASTE_EMPTY = '\x1b[200~\x1b[201~'
 const CTRL_V = '\x16'
+const ENABLE_MOUSE_TRACKING = '\x1b[?1000h\x1b[?1002h\x1b[?1006h'
+const DISABLE_MOUSE_TRACKING = '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l'
 
 function getImagePasteSignal(agentType: AgentType | undefined): string {
   return agentType === 'codex' ? CTRL_V : BRACKET_PASTE_EMPTY
@@ -85,6 +88,16 @@ function isMacSharedPasteboardPathText(text: string): boolean {
 interface PastePayload {
   text: string
   hasImage: boolean
+}
+
+interface PendingClipboardOffer {
+  id: number
+  text: string
+  source: ClipboardOfferSource
+}
+
+interface SafeClipboardCallbacks {
+  onWriteFailed?: (text: string, source: ClipboardOfferSource) => void
 }
 
 function clipboardHasImage(clipboardData: DataTransfer | null | undefined): boolean {
@@ -106,6 +119,8 @@ function clipboardHasImage(clipboardData: DataTransfer | null | undefined): bool
  * accidentally wipe images or other non-text content the user has copied.
  */
 class SafeClipboardProvider implements IClipboardProvider {
+  constructor(private callbacks: SafeClipboardCallbacks = {}) {}
+
   async readText(selection: ClipboardSelectionType): Promise<string> {
     if (selection !== 'c') return ''
     try {
@@ -119,10 +134,24 @@ class SafeClipboardProvider implements IClipboardProvider {
     // Only write to system clipboard, and only if there's actual non-whitespace content
     // This prevents OSC 52 sequences from clearing images/rich content from the clipboard
     if (selection !== 'c' || !text?.trim()) return
+    const startedAt = performance.now()
     try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('navigator.clipboard.writeText unavailable')
+      }
       await navigator.clipboard.writeText(text)
-    } catch {
-      // Clipboard write failed (permissions, etc.)
+      clientLog('clipboard_write_success', {
+        source: 'osc52',
+        chars: text.length,
+        durationMs: Math.round(performance.now() - startedAt),
+      })
+    } catch (error) {
+      clientLog('clipboard_write_failed', {
+        source: 'osc52',
+        chars: text.length,
+        error: error instanceof Error ? error.message : String(error),
+      }, 'warn')
+      this.callbacks.onWriteFailed?.(text, 'osc52')
     }
   }
 }
@@ -213,7 +242,36 @@ export function useTerminal({
   // Wheel event handling for tmux scrollback
   const wheelAccumRef = useRef<number>(0)
   const inTmuxCopyModeRef = useRef<boolean>(false)
+  const appMouseRef = useRef<boolean>(false)
+  const altScreenRef = useRef<boolean>(false)
   const copyModeCheckTimer = useRef<number | null>(null)
+  const clipboardOfferIdRef = useRef(0)
+  const [pendingClipboardOffer, setPendingClipboardOffer] = useState<PendingClipboardOffer | null>(null)
+
+  const offerClipboardCopy = useCallback((text: string, source: ClipboardOfferSource) => {
+    if (!text?.trim()) return
+    clipboardOfferIdRef.current += 1
+    setPendingClipboardOffer({
+      id: clipboardOfferIdRef.current,
+      text,
+      source,
+    })
+  }, [])
+
+  const copyPendingClipboardOffer = useCallback(() => {
+    if (!pendingClipboardOffer) return
+    copyText(pendingClipboardOffer.text)
+    clientLog('clipboard_manual_copy', {
+      source: pendingClipboardOffer.source,
+      chars: pendingClipboardOffer.text.length,
+    }, 'info')
+    setPendingClipboardOffer(null)
+  }, [pendingClipboardOffer])
+
+  const dismissPendingClipboardOffer = useCallback(() => {
+    setPendingClipboardOffer(null)
+  }, [])
+  const copyModePollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Track the currently attached session to prevent race conditions
   const attachedSessionRef = useRef<string | null>(null)
@@ -324,6 +382,7 @@ export function useTerminal({
   }, [])
 
   const setTmuxCopyMode = useCallback((nextValue: boolean) => {
+    if (nextValue && appMouseRef.current) return
     if (inTmuxCopyModeRef.current === nextValue) return
     inTmuxCopyModeRef.current = nextValue
 
@@ -333,7 +392,7 @@ export function useTerminal({
     const terminal = terminalRef.current
     if (terminal && nextValue) {
       // Disable all mouse tracking modes (1000=X10, 1002=button-event, 1003=any-event, 1006=SGR)
-      terminal.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l')
+      terminal.write(DISABLE_MOUSE_TRACKING)
     }
 
     checkScrollPosition()
@@ -409,7 +468,9 @@ export function useTerminal({
 
     const fitAddon = new FitAddon()
     terminal.loadAddon(fitAddon)
-    terminal.loadAddon(new ClipboardAddon(undefined, new SafeClipboardProvider()))
+    terminal.loadAddon(new ClipboardAddon(undefined, new SafeClipboardProvider({
+      onWriteFailed: offerClipboardCopy,
+    })))
 
     // Load search addon for terminal buffer search
     const searchAddon = new SearchAddon()
@@ -818,11 +879,11 @@ export function useTerminal({
       }
 
       // Optimistically show button when scrolling up
-      if (scrolledUp) {
+      if (scrolledUp && !appMouseRef.current) {
         setTmuxCopyMode(true)
       }
       // Request actual copy-mode status from tmux (debounced) - only if we sent scroll
-      if (didScroll) {
+      if (didScroll && !appMouseRef.current) {
         requestCopyModeCheck()
       }
       return false // We handled it, prevent xterm local scroll
@@ -1178,6 +1239,27 @@ export function useTerminal({
     }
   }, [sessionId, tmuxTarget, allowAttach, connectionStatus, connectionEpoch, checkScrollPosition])
 
+  useEffect(() => {
+    if (copyModePollIntervalRef.current !== null) {
+      globalThis.clearInterval(copyModePollIntervalRef.current)
+      copyModePollIntervalRef.current = null
+    }
+
+    if (!sessionId || !allowAttach || connectionStatus !== 'connected') return
+
+    copyModePollIntervalRef.current = globalThis.setInterval(() => {
+      if (attachedSessionRef.current !== sessionId) return
+      sendMessageRef.current({ type: 'tmux-check-copy-mode', sessionId })
+    }, 750)
+
+    return () => {
+      if (copyModePollIntervalRef.current !== null) {
+        globalThis.clearInterval(copyModePollIntervalRef.current)
+        copyModePollIntervalRef.current = null
+      }
+    }
+  }, [sessionId, allowAttach, connectionStatus])
+
   // Subscribe to terminal output with idle-based buffering
   // Batches chunks until the stream goes idle to avoid splitting escape sequences
   useEffect(() => {
@@ -1336,13 +1418,53 @@ export function useTerminal({
         setIsSwitching(false)
       }
 
+      if (
+        message.type === 'clipboard-offer' &&
+        attachedSession &&
+        message.sessionId === attachedSession
+      ) {
+        const text = message.text
+        if (!text?.trim()) return
+
+        if (!isiOS && navigator.clipboard?.writeText) {
+          const startedAt = performance.now()
+          void navigator.clipboard.writeText(text)
+            .then(() => {
+              clientLog('clipboard_write_success', {
+                source: message.source,
+                chars: text.length,
+                durationMs: Math.round(performance.now() - startedAt),
+              })
+            })
+            .catch((error) => {
+              clientLog('clipboard_write_failed', {
+                source: message.source,
+                chars: text.length,
+                error: error instanceof Error ? error.message : String(error),
+              }, 'warn')
+              offerClipboardCopy(text, message.source)
+            })
+        } else {
+          offerClipboardCopy(text, message.source)
+        }
+      }
+
       // Handle tmux copy-mode status response
       if (
         message.type === 'tmux-copy-mode-status' &&
         attachedSession &&
         message.sessionId === attachedSession
       ) {
-        setTmuxCopyMode(message.inCopyMode)
+        const nextAppMouse = message.appMouse === true
+        const wasAppMouse = appMouseRef.current
+        appMouseRef.current = nextAppMouse
+        altScreenRef.current = message.altScreen === true
+
+        if (!wasAppMouse && nextAppMouse) {
+          terminalRef.current?.write(ENABLE_MOUSE_TRACKING)
+        }
+
+        setTmuxCopyMode(nextAppMouse ? false : message.inCopyMode)
       }
     })
 
@@ -1352,7 +1474,7 @@ export function useTerminal({
       flush()
       cancelIosRepaint()
     }
-  }, [subscribe, checkScrollPosition, setTmuxCopyMode])
+  }, [subscribe, checkScrollPosition, setTmuxCopyMode, offerClipboardCopy])
 
   // Handle resize - with longer debounce to prevent flickering
   useEffect(() => {
@@ -1489,7 +1611,11 @@ export function useTerminal({
     serializeAddonRef,
     progressAddonRef,
     inTmuxCopyModeRef,
+    appMouseRef,
     setTmuxCopyMode,
     isSwitching,
+    pendingClipboardOffer,
+    copyPendingClipboardOffer,
+    dismissPendingClipboardOffer,
   }
 }
