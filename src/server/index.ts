@@ -551,6 +551,14 @@ interface WSData {
   clipboardPollInFlight: boolean
   lastClipboardBufferKey: string | null
   clipboardBufferArmedUntil: number
+  // Unix seconds of the arming gesture. Only buffers created at or after this
+  // are offered, so an unrelated/pre-existing buffer change during the armed
+  // window can't clobber the clipboard.
+  clipboardArmedAtSec: number
+  // Incremented on every stop/restart of the clipboard watch. Async work
+  // (baseline read, in-flight poll) captures the generation at launch and bails
+  // if it no longer matches, so a stale completion can't mutate a newer watch.
+  clipboardWatchGen: number
 }
 
 const sockets = new Set<ServerWebSocket<WSData>>()
@@ -567,6 +575,10 @@ interface TmuxBufferSummary {
   name: string
   created: number
   size: number
+  // Monotonic index parsed from tmux's automatic buffer name (buffer0001,
+  // buffer0002, …); -1 for explicitly named buffers. Used as the recency
+  // tiebreaker when buffer_created collides at whole-second resolution.
+  order: number
   key: string
 }
 
@@ -1838,6 +1850,8 @@ function serverFetch(req: Request, server: Server<WSData>) {
           clipboardPollInFlight: false,
           lastClipboardBufferKey: null,
           clipboardBufferArmedUntil: 0,
+          clipboardArmedAtSec: 0,
+          clipboardWatchGen: 0,
         },
       })
     ) {
@@ -1974,63 +1988,101 @@ function parseTmuxBufferSummaries(output: string): TmuxBufferSummary[] {
     const created = Number.parseInt(parts[1] ?? '', 10)
     const size = Number.parseInt(parts[2] ?? '', 10)
     if (!name || !Number.isFinite(created) || !Number.isFinite(size)) continue
+    // Only tmux's automatic buffers (buffer0001, buffer0002, …) carry a
+    // monotonic index. Explicitly named buffers (e.g. set-buffer -b snippet5)
+    // get -1 so their trailing digits don't masquerade as recency.
+    const orderMatch = name.match(/^buffer(\d+)$/)
+    const order = orderMatch ? Number.parseInt(orderMatch[1], 10) : -1
     summaries.push({
       name,
       created,
       size,
+      order,
       key: `${name}:${created}:${size}`,
     })
   }
-  summaries.sort((a, b) => b.created - a.created || b.size - a.size)
+  // Newest first. tmux's #{buffer_created} is whole-second resolution, so when
+  // two buffers share a second, tiebreak by the monotonic automatic-buffer
+  // index (buffer0002 newer than buffer0001) rather than size, which carries
+  // no recency information.
+  summaries.sort((a, b) => b.created - a.created || b.order - a.order || b.size - a.size)
   return summaries
 }
 
-function readLatestTmuxBufferSummary(): TmuxBufferSummary | null {
+/**
+ * Run a read-only tmux command without blocking the event loop. The clipboard
+ * watch polls on a 750ms timer, so using the synchronous Bun.spawnSync here
+ * would stall terminal streaming for every session on each tick (up to
+ * tmuxTimeoutMs if tmux is slow). Bun.spawn keeps it off the JS thread.
+ */
+async function readTmuxCapture(tmuxArgs: string[]): Promise<string | null> {
+  // Belt-and-suspenders timeout: don't rely solely on Bun.spawn's `timeout`
+  // option. Guarantee the process is killed (and thus `exited`/stdout resolve)
+  // so a hung tmux can never leave clipboardPollInFlight stuck forever.
+  let killTimer: ReturnType<typeof setTimeout> | null = null
+  let kill: (() => void) | null = null
   try {
-    const result = Bun.spawnSync(
-      [
-        'tmux',
-        ...withTmuxUtf8Flag([
-          'list-buffers',
-          '-F',
-          buildTmuxFormat(['#{buffer_name}', '#{buffer_created}', '#{buffer_size}']),
-        ]),
-      ],
-      { stdout: 'pipe', stderr: 'pipe', timeout: config.tmuxTimeoutMs }
-    )
-    if (result.exitCode !== 0) return null
-    return parseTmuxBufferSummaries(result.stdout?.toString() ?? '')[0] ?? null
+    const proc = Bun.spawn(['tmux', ...withTmuxUtf8Flag(tmuxArgs)], {
+      stdout: 'pipe',
+      // Ignore stderr rather than piping it: we never read it, and an
+      // undrained pipe could fill its OS buffer and block the process exit.
+      stderr: 'ignore',
+      timeout: config.tmuxTimeoutMs,
+      killSignal: 'SIGKILL',
+    })
+    kill = () => {
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        // already exited
+      }
+    }
+    killTimer = setTimeout(kill, config.tmuxTimeoutMs + 250)
+    const [stdout, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ])
+    if (exitCode !== 0) return null
+    return stdout
   } catch {
+    kill?.()
     return null
+  } finally {
+    if (killTimer !== null) clearTimeout(killTimer)
   }
 }
 
-function readTmuxBufferText(summary: TmuxBufferSummary): string | null {
+async function readLatestTmuxBufferSummary(): Promise<TmuxBufferSummary | null> {
+  const stdout = await readTmuxCapture([
+    'list-buffers',
+    '-F',
+    buildTmuxFormat(['#{buffer_name}', '#{buffer_created}', '#{buffer_size}']),
+  ])
+  if (stdout === null) return null
+  return parseTmuxBufferSummaries(stdout)[0] ?? null
+}
+
+async function readTmuxBufferText(summary: TmuxBufferSummary): Promise<string | null> {
   if (summary.size <= 0 || summary.size > CLIPBOARD_BUFFER_MAX_BYTES) {
     return null
   }
-
-  try {
-    const result = Bun.spawnSync(
-      ['tmux', ...withTmuxUtf8Flag(['show-buffer', '-b', summary.name])],
-      { stdout: 'pipe', stderr: 'pipe', timeout: config.tmuxTimeoutMs }
-    )
-    if (result.exitCode !== 0) return null
-    const text = result.stdout?.toString() ?? ''
-    return text.trim() ? text : null
-  } catch {
-    return null
-  }
+  const text = await readTmuxCapture(['show-buffer', '-b', summary.name])
+  if (text === null) return null
+  return text.trim() ? text : null
 }
 
 function stopClipboardBufferWatch(ws: ServerWebSocket<WSData>) {
   if (ws.data.clipboardPollTimer !== null) {
     clearInterval(ws.data.clipboardPollTimer)
   }
+  // Bump the generation so any in-flight baseline read or poll from the watch
+  // we're tearing down can't write back into a later watch on this socket.
+  ws.data.clipboardWatchGen += 1
   ws.data.clipboardPollTimer = null
   ws.data.clipboardPollInFlight = false
   ws.data.lastClipboardBufferKey = null
   ws.data.clipboardBufferArmedUntil = 0
+  ws.data.clipboardArmedAtSec = 0
 }
 
 function startClipboardBufferWatch(
@@ -2044,17 +2096,35 @@ function startClipboardBufferWatch(
     return
   }
 
-  const initial = readLatestTmuxBufferSummary()
-  ws.data.lastClipboardBufferKey = initial?.key ?? null
+  const gen = ws.data.clipboardWatchGen
   ws.data.clipboardPollTimer = setInterval(() => {
-    fireAndForget(pollClipboardBuffer(ws, sessionId), 'pollClipboardBuffer')
+    fireAndForget(pollClipboardBuffer(ws, sessionId, gen), 'pollClipboardBuffer')
   }, CLIPBOARD_BUFFER_POLL_MS)
+  // Establish the baseline asynchronously so a pre-existing buffer isn't offered
+  // on the first poll. Skip if this watch was already armed (a copy may have
+  // landed before the read resolved — don't watermark the user's own buffer;
+  // the created-time gate handles a genuinely pre-existing one) or superseded.
+  fireAndForget(
+    (async () => {
+      const initial = await readLatestTmuxBufferSummary()
+      if (
+        ws.data.clipboardWatchGen === gen &&
+        ws.data.lastClipboardBufferKey === null &&
+        ws.data.clipboardBufferArmedUntil === 0
+      ) {
+        ws.data.lastClipboardBufferKey = initial?.key ?? null
+      }
+    })(),
+    'clipboardBaseline'
+  )
 }
 
 async function pollClipboardBuffer(
   ws: ServerWebSocket<WSData>,
-  sessionId: string
+  sessionId: string,
+  gen: number
 ) {
+  if (ws.data.clipboardWatchGen !== gen) return
   if (ws.data.clipboardPollInFlight) return
   if (!sockets.has(ws)) return
   if (ws.data.currentSessionId !== sessionId) return
@@ -2064,7 +2134,12 @@ async function pollClipboardBuffer(
 
   ws.data.clipboardPollInFlight = true
   try {
-    const latest = readLatestTmuxBufferSummary()
+    const latest = await readLatestTmuxBufferSummary()
+    // The read yields the event loop, so the watch may have been torn down or
+    // the socket may have switched sessions while tmux ran. Re-validate before
+    // touching state or offering.
+    if (ws.data.clipboardWatchGen !== gen) return
+    if (!sockets.has(ws) || ws.data.currentSessionId !== sessionId) return
     if (!latest) {
       ws.data.lastClipboardBufferKey = null
       return
@@ -2084,7 +2159,21 @@ async function pollClipboardBuffer(
       return
     }
 
-    const text = readTmuxBufferText(latest)
+    // Only offer buffers created at/after the arming gesture. A pre-existing or
+    // unrelated (cross-window) buffer that becomes "latest" while armed has an
+    // older creation time and is skipped, so it can't clobber the clipboard.
+    if (latest.created < ws.data.clipboardArmedAtSec) {
+      logger.debug('clipboard_buffer_precedes_arm', {
+        sessionId,
+        bufferName: latest.name,
+        createdSec: latest.created,
+        armedAtSec: ws.data.clipboardArmedAtSec,
+        connectionId: ws.data.connectionId,
+      })
+      return
+    }
+
+    const text = await readTmuxBufferText(latest)
     if (!text) {
       logger.debug('clipboard_buffer_skipped', {
         sessionId,
@@ -2095,6 +2184,11 @@ async function pollClipboardBuffer(
       return
     }
 
+    // Re-validate again after the second tmux read before delivering, so we
+    // never push a session A offer to a socket that has closed or moved to B.
+    if (ws.data.clipboardWatchGen !== gen) return
+    if (!sockets.has(ws) || ws.data.currentSessionId !== sessionId) return
+
     logger.debug('clipboard_buffer_offer', {
       sessionId,
       bufferName: latest.name,
@@ -2103,17 +2197,31 @@ async function pollClipboardBuffer(
     })
     send(ws, { type: 'clipboard-offer', sessionId, text, source: 'tmux-buffer' })
     ws.data.clipboardBufferArmedUntil = 0
+    ws.data.clipboardArmedAtSec = 0
   } finally {
-    ws.data.clipboardPollInFlight = false
+    // Only release the in-flight guard if the watch is still ours. If it was
+    // stopped/restarted mid-poll, stopClipboardBufferWatch already reset the
+    // guard for the new generation and we must not clear it out from under it.
+    if (ws.data.clipboardWatchGen === gen) {
+      ws.data.clipboardPollInFlight = false
+    }
   }
 }
 
+// Arm the clipboard buffer watch on any left-button mouse event (press, drag,
+// or release). This covers every selection style that copies to a tmux paste
+// buffer — drag-select, double-click (word) and triple-click (line), which
+// emit button-0 events with no motion bit. Bare taps also match, but they
+// can't clobber the clipboard: the poll additionally requires the buffer to
+// have been created at/after the gesture (see clipboardArmedAtSec), so a tap
+// that copies nothing simply never produces an offer.
+// SGR encoding: low 2 bits = button (0 = left), bits 6-7 (0xC0) = wheel/extended.
 function containsClipboardArmingMouseInput(data: string): boolean {
   SGR_MOUSE_INPUT_RE.lastIndex = 0
   let match: RegExpExecArray | null
   while ((match = SGR_MOUSE_INPUT_RE.exec(data)) !== null) {
     const button = Number(match[1])
-    if (button < 64 && (button & 3) === 0) {
+    if ((button & 3) === 0 && (button & 0xc0) === 0) {
       return true
     }
   }
@@ -4097,7 +4205,13 @@ function handleTerminalInputPersistent(
   if (session?.remote && !config.remoteAllowAttach) return
 
   if (!session?.remote && containsClipboardArmingMouseInput(data)) {
-    ws.data.clipboardBufferArmedUntil = Date.now() + CLIPBOARD_BUFFER_ARM_MS
+    const now = Date.now()
+    ws.data.clipboardBufferArmedUntil = now + CLIPBOARD_BUFFER_ARM_MS
+    // No slack: we arm here BEFORE forwarding the input to tmux below, so any
+    // buffer this gesture creates is stamped at/after this whole second. A
+    // slack would instead let a pre-existing buffer created just before the
+    // gesture be mis-offered as the user's copy.
+    ws.data.clipboardArmedAtSec = Math.floor(now / 1000)
   }
 
   ws.data.terminal?.write(data)
