@@ -18,6 +18,11 @@ bun run test       # unit tests
 
 Run `bun run lint && bun run typecheck && bun run test` after changes.
 
+Always test via **`bun run test`**, not `bun test <file>` directly: the runner
+sets `NO_PROXY` for loopback so integration tests can reach their spawned
+localhost servers. Run directly and `waitForHealth` hangs under David's `sfw`
+package-manager proxy (see FORK.md → How we work).
+
 ## How It Works
 
 - Single tmux session (default: `agentboard`) with one window per project
@@ -39,6 +44,10 @@ Run `bun run lint && bun run typecheck && bun run test` after changes.
 
 ## Git
 
+- **Commit straight to `master`. No PRs in our fork** — David merges everything
+  onto our own `master` (this overrides the default "branch first on the default
+  branch"). Use a short-lived branch only to stage a risky multi-commit change,
+  then fast-forward `master` and delete the branch.
 - Check `git status`/`git diff` before commits
 - Atomic commits; push only when asked
 - Never destructive ops (`reset --hard`, `force push`) without explicit consent
