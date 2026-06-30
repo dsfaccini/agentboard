@@ -118,6 +118,7 @@ Note: if you `tmux kill-session -t agentboard` while agentboard is loaded, the w
 ## Notes
 
 - The plist sets `LANG=en_US.UTF-8`. LaunchAgents start with a bare environment; without this, tmux renders non-ASCII characters as `?` or stripped bytes.
+- **tmux-resurrect/continuum users:** the wrapper runs `scripts/tmux-restore-once.sh` before agentboard to restore saved sessions in a single ordered pass. You **must** set `@continuum-restore 'off'` in `~/.tmux.conf` — agentboard starts the tmux server at login, and continuum's own server-start restore would otherwise race agentboard and deadlock (see FORK.md → 2026-06-27 incident). Continuum's periodic *save* stays on.
 - The wrapper script `cd`s into the repo directory before `bun run start`, matching the Linux systemd setup.
 - Override the log path via the `LOG_FILE` env var (respected by agentboard and the rotate script).
 - Override the tmux session name via `TMUX_SESSION` (respected by agentboard and the watchdog).

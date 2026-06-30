@@ -92,6 +92,11 @@ security → perf/safety → features.
   whole isolated server down with `kill-server`. See incident below.
 - **Hot-path perf** — terminal output and input batching.
 - **Caps & auth** — keep payload/size/MIME limits when editing endpoints/WS.
+- **tmux-resurrect/continuum boot race** — agentboard's launchd job starts the
+  tmux server at login. If tmux-continuum's `@continuum-restore` is `on`, the
+  server-start restore races agentboard on the same server and deadlocks. Keep
+  `@continuum-restore 'off'` and let `scripts/tmux-restore-once.sh` (run from the
+  launchd wrapper, before agentboard) do a single ordered restore. See incident.
 
 ## Incident (2026-06-16): pty-pool exhaustion
 
@@ -103,6 +108,23 @@ killed only the base session and `rmSync`'d the socket dir **without**
 resurrecting sessions on the default socket). Fixed via the test-isolation
 hardening listed under "ours" + `PtyTerminalProxy.doStart` now disposing the
 grouped session when the `tmux attach` spawn fails.
+
+## Incident (2026-06-27): continuum-restore boot deadlock
+
+After a reboot the agentboard UI showed a stuck yellow `/ Restoring...`. Root
+cause: agentboard's launchd job (`com.agentboard` → `agentboard-run.sh`) starts
+the tmux server via `tmux new-session`; with `@continuum-restore 'on'` that
+tripped tmux-continuum's server-start restore, which then replayed 30+ saved
+windows **concurrently** with agentboard's own `ensureSession()`/discovery on the
+same server. They collided, a `tmux rename-window` wedged, and resurrect's spinner
+spun forever (`tmux_spinner.sh "Restoring..."`) — agentboard just rendered that
+stuck tmux message line. Fix: order the two. `~/.tmux.conf` now sets
+`@continuum-restore 'off'` (continuum still **saves**) and
+`@resurrect-capture-pane-contents 'off'` (cwds + window names are all we need);
+the launchd wrapper runs `scripts/tmux-restore-once.sh` to do one synchronous
+restore *before* agentboard starts (cold-boot only, via `tmux has-session` guard;
+180s watchdog). `~/.tmux.conf` is a personal dotfile, not in this repo — the
+coupling lives in `scripts/tmux-restore-once.sh`'s header + `launchd/install.sh`.
 
 ## Deferred follow-ups
 

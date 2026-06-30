@@ -59,6 +59,10 @@ export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 export LC_CTYPE=en_US.UTF-8
 cd "$REPO_DIR"
+# Restore saved tmux sessions before agentboard starts the server (avoids the
+# 2026-06-27 continuum-restore boot race). Requires @continuum-restore 'off' in
+# ~/.tmux.conf — see scripts/tmux-restore-once.sh for the full rationale.
+"$REPO_DIR/scripts/tmux-restore-once.sh" 2>/dev/null || true
 exec "$BUN_PATH" run start
 EOF
 chmod +x "$BIN_DIR/agentboard-run.sh"
