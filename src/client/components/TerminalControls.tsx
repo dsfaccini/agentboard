@@ -6,11 +6,12 @@
 
 import { useState, useRef, useEffect } from 'react'
 import type { TouchEvent as ReactTouchEvent } from 'react'
-import type { Session } from '@shared/types'
+import type { AgentType, Session } from '@shared/types'
 import { CornerDownLeftIcon } from '@untitledui-icons/react/line'
 import DPad from './DPad'
 import NumPad from './NumPad'
 import { isIOSDevice } from '../utils/device'
+import { imagePathInput } from '../utils/paste'
 
 interface SessionInfo {
   id: string
@@ -23,6 +24,8 @@ interface TerminalControlsProps {
   disabled?: boolean
   sessions: SessionInfo[]
   currentSessionId: string | null
+  /** Agent type of the attached session — controls image-paste delivery. */
+  agentType?: AgentType
   onSelectSession: (sessionId: string) => void
   hideSessionSwitcher?: boolean
   onRefocus?: () => void
@@ -114,11 +117,42 @@ const statusDot: Record<Session['status'], string> = {
   unknown: 'bg-muted',
 }
 
+/**
+ * Uploads a clipboard image to the server. Returns the stored file path, or
+ * the failure message (e.g. the server's "Image too large" / "Unsupported
+ * image type") so callers can show it instead of dropping the paste silently.
+ */
+async function uploadPasteImage(
+  blob: Blob,
+  filename: string
+): Promise<{ path: string } | { error: string }> {
+  try {
+    const formData = new FormData()
+    formData.append('image', blob, filename)
+    const res = await fetch('/api/paste-image', { method: 'POST', body: formData })
+    if (res.ok) {
+      const { path } = (await res.json()) as { path: string }
+      return { path }
+    }
+    let error = 'Image upload failed'
+    try {
+      const body = (await res.json()) as { error?: unknown }
+      if (typeof body.error === 'string') error = body.error
+    } catch {
+      // non-JSON error response; keep the generic message
+    }
+    return { error }
+  } catch {
+    return { error: 'Image upload failed' }
+  }
+}
+
 export default function TerminalControls({
   onSendKey,
   disabled = false,
   sessions,
   currentSessionId,
+  agentType,
   onSelectSession,
   hideSessionSwitcher = false,
   onRefocus,
@@ -127,6 +161,7 @@ export default function TerminalControls({
 }: TerminalControlsProps) {
   const [showPasteInput, setShowPasteInput] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
+  const [pasteError, setPasteError] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [ctrlActive, setCtrlActive] = useState(false)
   const pasteInputRef = useRef<HTMLInputElement>(null)
@@ -203,16 +238,19 @@ export default function TerminalControls({
           if (!blob) continue
 
           setIsUploading(true)
+          setPasteError(null)
           try {
-            const formData = new FormData()
-            formData.append('image', blob, `paste.${item.type.split('/')[1] || 'png'}`)
-            const res = await fetch('/api/paste-image', { method: 'POST', body: formData })
-            if (res.ok) {
-              const { path } = await res.json()
-              onSendKey(path)
+            const result = await uploadPasteImage(
+              blob,
+              `paste.${item.type.split('/')[1] || 'png'}`
+            )
+            if ('path' in result) {
+              onSendKey(imagePathInput(result.path, agentType))
               setShowPasteInput(false)
               setPasteValue('')
               onRefocus?.()
+            } else {
+              setPasteError(result.error)
             }
           } finally {
             setIsUploading(false)
@@ -224,7 +262,7 @@ export default function TerminalControls({
 
     zone.addEventListener('paste', handlePaste)
     return () => zone.removeEventListener('paste', handlePaste)
-  }, [showPasteInput, onSendKey, onRefocus])
+  }, [showPasteInput, onSendKey, onRefocus, agentType])
 
   const handlePress = (key: string) => {
     if (disabled) return
@@ -264,6 +302,7 @@ export default function TerminalControls({
     // Check if keyboard was visible before we do anything
     const wasKeyboardVisible = isKeyboardVisible?.() ?? false
     triggerHaptic()
+    setPasteError(null)
 
     // Try Clipboard API with image support
     try {
@@ -273,19 +312,24 @@ export default function TerminalControls({
         const imageType = item.types.find((t) => t.startsWith('image/'))
         if (imageType) {
           const blob = await item.getType(imageType)
-          // Upload image to server
-          const formData = new FormData()
-          formData.append('image', blob, `paste.${imageType.split('/')[1] || 'png'}`)
-          const res = await fetch('/api/paste-image', { method: 'POST', body: formData })
-          if (res.ok) {
-            const { path } = await res.json()
-            // Send file path - Claude Code can reference images by path
-            onSendKey(path)
+          const result = await uploadPasteImage(
+            blob,
+            `paste.${imageType.split('/')[1] || 'png'}`
+          )
+          if ('path' in result) {
+            // Deliver the uploaded path so the agent attaches the image:
+            // bracketed paste for Claude ([Image #N]), raw path for Codex.
+            onSendKey(imagePathInput(result.path, agentType))
             if (wasKeyboardVisible) {
               onRefocus?.()
             }
             return
           }
+          // Surface the failure in the paste modal instead of dropping the paste
+          setPasteError(result.error)
+          setShowPasteInput(true)
+          setPasteValue('')
+          return
         }
 
         // Check for text
@@ -329,12 +373,14 @@ export default function TerminalControls({
     }
     setShowPasteInput(false)
     setPasteValue('')
+    setPasteError(null)
     onRefocus?.()
   }
 
   const handlePasteCancel = () => {
     setShowPasteInput(false)
     setPasteValue('')
+    setPasteError(null)
     onRefocus?.()
   }
 
@@ -593,6 +639,11 @@ export default function TerminalControls({
                 className="w-full h-11 px-3 text-[16px] bg-surface border border-border rounded-md text-primary placeholder:text-muted outline-none focus:border-accent"
                 style={{ fontSize: '16px' }}
               />
+            )}
+            {pasteError && (
+              <p className="mt-2 text-xs text-danger" role="alert">
+                {pasteError}
+              </p>
             )}
             <div className="flex justify-end gap-2 mt-4">
               <button
