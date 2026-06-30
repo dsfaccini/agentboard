@@ -4,24 +4,43 @@ Run agentboard as a persistent systemd user service that starts on boot.
 
 ## Prerequisites
 
-- Linux with systemd
-- `bun` installed and available in PATH
-- `loginctl enable-linger $USER` (allows user services to run without an active session)
+- Linux with systemd (Ubuntu/Debian — installer uses `apt-get`)
+- `sudo` access (only to install missing system packages)
+
+Everything else is bootstrapped by the installer — you don't need `bun`, `tmux`,
+or the tmux plugins installed beforehand.
 
 ## Installation
 
 ```bash
-# Enable lingering for your user (required for service to run after logout)
-loginctl enable-linger $USER
-
-# Run the install script
 ./systemd/install.sh
 ```
 
-The install script will:
-1. Detect your bun installation path
-2. Generate `agentboard.service` with correct paths for your system
-3. Install and start the service
+The install script is **self-contained**. It will:
+1. Install missing prerequisites (`git`, `curl`, `tmux`, and `bun` via the
+   official installer)
+2. `bun install` + `bun run build` the app
+3. Set up `tmux-resurrect` + `tmux-continuum` for reboot persistence and append a
+   marked block to `~/.tmux.conf` (backed up first; idempotent on re-run)
+4. Generate `agentboard.service` with correct paths, including an `ExecStartPre`
+   that restores saved tmux sessions **before** agentboard starts
+5. `loginctl enable-linger` so the service starts on boot without a login
+6. Install and start the service
+
+### Why restore-before-start
+
+agentboard starts the tmux server itself at boot. If tmux-continuum's
+`@continuum-restore` were `on`, that server-start restore would run concurrently
+with agentboard and deadlock (see [FORK.md](../FORK.md) → 2026-06-27 incident).
+So the installer sets `@continuum-restore 'off'` and the service runs
+`scripts/tmux-restore-once.sh` once, before agentboard. Continuum still **saves**.
+
+### Env knobs
+
+```bash
+AGENTBOARD_TMUX_PERSIST=0 ./systemd/install.sh   # skip tmux-resurrect/continuum setup
+AGENTBOARD_SKIP_BUILD=1   ./systemd/install.sh   # skip bun install + build
+```
 
 ## Commands
 
