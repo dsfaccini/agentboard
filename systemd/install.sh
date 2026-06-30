@@ -109,12 +109,39 @@ TMUXEOF
   fi
 fi
 
+# --- optional auth token -------------------------------------------------------
+# agentboard binds 127.0.0.1 by default, so behind a tunnel/VPN a token is
+# optional. Pre-seed via AGENTBOARD_AUTH_TOKEN to skip the prompt.
+AUTH_TOKEN="${AGENTBOARD_AUTH_TOKEN:-}"
+if [ -z "$AUTH_TOKEN" ] && [ -t 0 ]; then
+  echo ""
+  echo "Optional auth token for remote access (agentboard binds 127.0.0.1 by"
+  echo "default, so behind a tunnel/VPN you can leave this blank)."
+  printf "Token — blank to skip, or 'gen' to generate one: "
+  read -r reply || reply=""
+  case "$reply" in
+    gen|GEN|g)
+      if command -v openssl >/dev/null 2>&1; then
+        AUTH_TOKEN="$(openssl rand -hex 32)"
+      else
+        AUTH_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+      fi
+      echo "Generated token: $AUTH_TOKEN"
+      echo "Open http://<host>:47329/?token=$AUTH_TOKEN once to set the cookie."
+      ;;
+    "") : ;;
+    *) AUTH_TOKEN="$reply" ;;
+  esac
+fi
+
 # --- systemd user service ------------------------------------------------------
 RESTORE_PRE=""
 if [ "$SETUP_TMUX_PERSIST" = "1" ]; then
   # `-` prefix: a failed/no-op restore must never block the service from starting.
   RESTORE_PRE="ExecStartPre=-$REPO_DIR/scripts/tmux-restore-once.sh"
 fi
+AUTH_ENV=""
+[ -n "$AUTH_TOKEN" ] && AUTH_ENV="Environment=AGENTBOARD_AUTH_TOKEN=$AUTH_TOKEN"
 
 cat > "$SCRIPT_DIR/$SERVICE_NAME" << EOF
 [Unit]
@@ -129,11 +156,14 @@ ExecStart=$BUN_PATH run start
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
+$AUTH_ENV
 Environment=PATH=$BUN_DIR:$HOME/.bun/bin:$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 [Install]
 WantedBy=default.target
 EOF
+# May hold a secret — keep the unit readable only by the user.
+chmod 600 "$SCRIPT_DIR/$SERVICE_NAME"
 
 echo "Generated $SERVICE_NAME with:"
 echo "  WorkingDirectory: $REPO_DIR"
@@ -162,6 +192,10 @@ echo "  systemctl --user restart agentboard  # Restart"
 echo "  systemctl --user stop agentboard     # Stop"
 echo "  journalctl --user -u agentboard -f   # View logs"
 echo ""
-echo "Remote access: agentboard binds the backend port (default 47329). For"
-echo "Tailscale/LAN exposure set AGENTBOARD_AUTH_TOKEN (and AGENTBOARD_BIND_TAILSCALE)"
-echo "in the [Service] Environment= lines — see README.md."
+if [ -n "$AUTH_TOKEN" ]; then
+  echo "Auth token is set in the service. Reach it at http://<host>:47329/?token=<token>."
+else
+  echo "No auth token set — agentboard listens on 127.0.0.1:47329 only. Reach it via"
+  echo "your tunnel/VPN, or re-run with AGENTBOARD_AUTH_TOKEN=... (+ AGENTBOARD_BIND_TAILSCALE=true)"
+  echo "to expose it. See README.md."
+fi

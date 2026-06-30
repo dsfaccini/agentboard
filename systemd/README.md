@@ -24,8 +24,12 @@ The install script is **self-contained**. It will:
    marked block to `~/.tmux.conf` (backed up first; idempotent on re-run)
 4. Generate `agentboard.service` with correct paths, including an `ExecStartPre`
    that restores saved tmux sessions **before** agentboard starts
-5. `loginctl enable-linger` so the service starts on boot without a login
-6. Install and start the service
+5. Prompt for an optional `AGENTBOARD_AUTH_TOKEN` (blank to skip, or `gen` to
+   generate one) — skippable since agentboard binds `127.0.0.1` by default. Skips
+   silently when run non-interactively; pre-seed `AGENTBOARD_AUTH_TOKEN=…` to set
+   it without the prompt.
+6. `loginctl enable-linger` so the service starts on boot without a login
+7. Install and start the service
 
 ### Why restore-before-start
 
