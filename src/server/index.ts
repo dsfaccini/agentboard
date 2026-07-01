@@ -2444,6 +2444,9 @@ function handleMessage(
     case 'terminal-input':
       handleTerminalInputPersistent(ws, message.sessionId, message.data)
       return
+    case 'terminal-paste':
+      handleTerminalPastePersistent(ws, message.sessionId, message.data)
+      return
     case 'terminal-resize':
       handleTerminalResizePersistent(
         ws,
@@ -4415,6 +4418,23 @@ function handleTerminalInputPersistent(
       scheduleLastUserMessageCapture(sessionId)
     }
   }
+}
+
+function handleTerminalPastePersistent(
+  ws: ServerWebSocket<WSData>,
+  sessionId: string,
+  data: string
+) {
+  if (sessionId !== ws.data.currentSessionId) {
+    return
+  }
+
+  const session = registry.get(sessionId)
+  if (session?.remote && !config.remoteAllowAttach) return
+
+  // Pasting stages text in the pane's input; it is NOT a submit, so unlike
+  // terminal-input we deliberately skip the Enter/"working" status heuristics.
+  ws.data.terminal?.paste(data)
 }
 
 function handleTerminalResizePersistent(
