@@ -137,6 +137,8 @@ function setupDom() {
       removeEventListener: () => {},
     }),
     devicePixelRatio: 1,
+    location: { href: 'http://localhost/', search: '', protocol: 'http:', host: 'localhost', port: '' },
+    history: { pushState: () => {}, replaceState: () => {} },
   } as unknown as Window & typeof globalThis
 
   globalAny.ResizeObserver = class ResizeObserverMock {

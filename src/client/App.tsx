@@ -7,6 +7,7 @@ import NewSessionModal from './components/NewSessionModal'
 import SettingsModal from './components/SettingsModal'
 import { ToastViewport } from './components/Toast'
 import { useSessionStore } from './stores/sessionStore'
+import { useUrlSync } from './hooks/useUrlSync'
 import {
   useSettingsStore,
   useSettingsHasHydrated,
@@ -54,6 +55,8 @@ export default function App() {
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null)
   const [pendingHibernatingSession, setPendingHibernatingSession] =
     useState<AgentSession | null>(null)
+
+  useUrlSync()
 
   const sessions = useSessionStore((state) => state.sessions)
   const agentSessions = useSessionStore((state) => state.agentSessions)
