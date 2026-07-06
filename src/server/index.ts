@@ -66,6 +66,7 @@ import { RemoteSessionPoller, splitSshOptions, buildRemoteSessionId } from './re
 import { normalizePaneStartCommand } from './agentDetection'
 import { generateSessionName } from './nameGenerator'
 import { shellQuote } from './shellQuote'
+import { startGhGatewayWatchdog } from './ghGatewayWatchdog'
 import { SshTerminalProxy } from './terminal/SshTerminalProxy'
 import {
   buildTmuxFormat,
@@ -1254,6 +1255,8 @@ logger.info('startup_state', {
 
 refreshSessionsSync() // hydrate from persisted associations without verification
 setInterval(refreshSessions, config.refreshIntervalMs) // Async for periodic
+
+startGhGatewayWatchdog() // fork-only: keep David's local gh-gateway proxy alive
 
 // Event loop lag monitor — detects when spawnSync or other blocking work
 // starves the event loop, causing typing lag and slow WebSocket delivery.

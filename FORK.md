@@ -58,6 +58,16 @@ security → perf/safety → features.
   teardown (`killTmuxServer` → `rmSync`), `TMUX_TMPDIR` isolation in every
   real-tmux test, `shutdownProcess` (SIGTERM→SIGKILL), bounded tmux-spawn
   timeouts, and the `scripts/test-runner.ts` default-socket + tmpdir sweep backstop.
+- **gh-gateway watchdog** (`src/server/ghGatewayWatchdog.ts`, wired in
+  `index.ts`): macOS-only `setInterval` (60s) that shells out to David's
+  `~/ai-coding-tools/github-graphql-proxy/scripts/gh-gateway-doctor.sh` to keep
+  his local GitHub-API proxy alive, so no AICA has to run the doctor by hand.
+  Idempotent + no-op off darwin, under `NODE_ENV=test` (integration tests boot
+  the real `index.ts`), or when the script is absent. Env:
+  `AGENTBOARD_GH_GATEWAY_WATCHDOG=false` disables, `AGENTBOARD_GH_GATEWAY_DOCTOR`
+  overrides the path, `AGENTBOARD_GH_GATEWAY_WATCHDOG_MS` the interval. This is a
+  David-local convenience coupled to a foreign subsystem — pure fork territory,
+  never upstream it.
 
 ## Sync state vs upstream
 
