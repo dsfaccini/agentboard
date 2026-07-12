@@ -24,8 +24,9 @@ const intervalMsRaw = Number(process.env.AGENTBOARD_GH_GATEWAY_WATCHDOG_MS)
 const intervalMs =
   Number.isFinite(intervalMsRaw) && intervalMsRaw > 0 ? intervalMsRaw : 60_000
 
-// The doctor can block up to ~16s (two 6s curls + a 3s service restart wait).
-const DOCTOR_TIMEOUT_MS = 30_000
+// Doctor worst case: two curls + kickstart sleep + ~20s root pf-watchdog wait
+// (four 5s ticks with a health probe each). Keep headroom above that.
+const DOCTOR_TIMEOUT_MS = 90_000
 
 let inFlight = false
 

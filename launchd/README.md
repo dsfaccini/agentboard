@@ -21,10 +21,11 @@ The install script will:
 3. Generate two plists in `~/Library/LaunchAgents/`
 4. Load them via `launchctl`
 
-Installs two agents:
+Installs three agents:
 
-- **`com.agentboard`** — supervises agentboard. `KeepAlive` respawns on crash or non-zero exit, `ThrottleInterval: 10` prevents tight restart loops.
+- **`com.agentboard`** — supervises agentboard. `KeepAlive` respawns on crash or non-zero exit, `ThrottleInterval: 10` prevents tight restart loops. Wrapper uses a real bun binary (never Socket Firewall `sfw-shims`) and `bun src/server/index.ts` directly.
 - **`com.agentboard.logrotate`** — hourly. Rotates `agentboard.log`, `launchd.out.log`, and `launchd.err.log` under `~/.agentboard/` at 50MB each using a copytruncate pattern (preserves pino's open file descriptor), keeps 5 gzipped archives per file.
+- **`com.agentboard.memory-recycle`** — Sunday 04:15 local. Runs `scripts/agentboard-memory-recycle.sh` (kickstart + health + gh-gateway doctor). Log: `~/.agentboard/memory-recycle.log`.
 
 After install, agentboard listens on `http://localhost:47329`.
 
@@ -36,6 +37,7 @@ agentboard          # Start and print URL
 agentboard status   # LaunchAgent + health status
 agentboard stop     # Stop the LaunchAgent and any matching leftover listener
 agentboard restart  # Restart and wait for health
+agentboard recycle  # Memory recycle now (same as weekly job)
 agentboard logs     # Tail app + launchd logs
 
 # Status
@@ -50,6 +52,10 @@ tail ~/.agentboard/launchd.{out,err}.log
 # Force restart
 launchctl kickstart -k gui/$(id -u)/com.agentboard
 
+# Memory recycle now (logs to ~/.agentboard/memory-recycle.log)
+agentboard recycle
+# or: ~/.agentboard/bin/agentboard-memory-recycle.sh
+
 # Stop (e.g. before running `bun run dev` against port 47329)
 launchctl unload ~/Library/LaunchAgents/com.agentboard.plist
 
@@ -63,7 +69,8 @@ launchctl load -w ~/Library/LaunchAgents/com.agentboard.plist
 ## Uninstall
 
 ```bash
-for label in com.agentboard com.agentboard.logrotate; do
+for label in com.agentboard com.agentboard.logrotate com.agentboard.memory-recycle; do
+  launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/$label.plist 2>/dev/null || true
   launchctl unload ~/Library/LaunchAgents/$label.plist 2>/dev/null || true
   rm -f ~/Library/LaunchAgents/$label.plist
 done

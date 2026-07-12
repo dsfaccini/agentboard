@@ -68,6 +68,23 @@ security → perf/safety → features.
   overrides the path, `AGENTBOARD_GH_GATEWAY_WATCHDOG_MS` the interval. This is a
   David-local convenience coupled to a foreign subsystem — pure fork territory,
   never upstream it.
+- **Weekly memory recycle** (`scripts/agentboard-memory-recycle.sh`, LaunchAgent
+  `com.agentboard.memory-recycle` via `launchd/install.sh`): Sunday 04:15 local.
+  Kickstarts `com.agentboard` (clears multi-day bun phys_footprint growth —
+  ~1.3 GB → ~165 MB observed), waits for `/api/health`, then runs the
+  gh-gateway doctor. Doctor prefers no-sudo heal + root `com.david.gh-gateway-pf`
+  wait; only if pf is still down does it notify with **one** command:
+  `~/ai-coding-tools/github-graphql-proxy/scripts/gh-gateway-fix-pf.sh`
+  (sudo pfctl + verify — never a two-step gap). Ad-hoc: `agentboard recycle`.
+  LaunchAgent PATH must use real `~/.bun/bin/bun`, never `sfw-shims` (shim can
+  exit 0 on network errors so KeepAlive won't respawn).
+- **Memory growth mitigations + sampling** (same incident class): log poller
+  age-filters history for match payloads (`getHistoryMaxAgeHours`, same as UI);
+  match scrollback 10k→1500 lines; prune `emptyLogCache` / `rematchAttemptCache`
+  / expired `lastUserMessageLocks`. Continuous sampler
+  (`src/server/memorySampler.ts`, `GET /api/memory`, design in
+  `notes/memory-sampling.md`) records a 5‑min heap/rss ring + sparse
+  `memory_sample` logs so slope is visible without Activity Monitor.
 
 ## Sync state vs upstream
 
