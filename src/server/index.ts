@@ -67,6 +67,7 @@ import { normalizePaneStartCommand } from './agentDetection'
 import { generateSessionName } from './nameGenerator'
 import { shellQuote } from './shellQuote'
 import { startGhGatewayWatchdog } from './ghGatewayWatchdog'
+import { getMemoryStatus, startMemorySampler } from './memorySampler'
 import { SshTerminalProxy } from './terminal/SshTerminalProxy'
 import {
   buildTmuxFormat,
@@ -726,8 +727,16 @@ const logPoller = new LogPoller(db, registry, {
   onOrphanSessionsDiscovered: () => {
     updateDormantAgentSessions()
   },
-  isLastUserMessageLocked: (tmuxWindow) =>
-    (lastUserMessageLocks.get(tmuxWindow) ?? 0) > Date.now(),
+  isLastUserMessageLocked: (tmuxWindow) => {
+    const expiry = lastUserMessageLocks.get(tmuxWindow) ?? 0
+    if (expiry <= Date.now()) {
+      // Drop expired keys so the map doesn't accumulate every window ever typed in.
+      if (expiry > 0) lastUserMessageLocks.delete(tmuxWindow)
+      return false
+    }
+    return true
+  },
+  getHistoryMaxAgeHours: () => runtimeHistoryMaxAgeHours,
   maxLogsPerPoll: config.logPollMax,
   rgThreads: config.rgThreads,
   matchProfile: config.logMatchProfile,
@@ -1257,6 +1266,7 @@ refreshSessionsSync() // hydrate from persisted associations without verificatio
 setInterval(refreshSessions, config.refreshIntervalMs) // Async for periodic
 
 startGhGatewayWatchdog() // fork-only: keep David's local gh-gateway proxy alive
+startMemorySampler() // fork-only: continuous heap/rss ring for multi-day growth slope
 
 // Event loop lag monitor — detects when spawnSync or other blocking work
 // starves the event loop, causing typing lag and slow WebSocket delivery.
@@ -1350,6 +1360,14 @@ app.post('/api/client-log', async (c) => {
 })
 
 app.get('/api/health', (c) => c.json({ ok: true }))
+// Memory snapshot + optional in-process history ring (fork-only observability).
+// ?history=1 includes ring; ?footprint=1 shells out to macOS `footprint` (slow).
+app.get('/api/memory', async (c) => {
+  const history = c.req.query('history') === '1' || c.req.query('history') === 'true'
+  const footprint =
+    c.req.query('footprint') === '1' || c.req.query('footprint') === 'true'
+  return c.json(await getMemoryStatus({ history, footprint }))
+})
 app.get('/api/sessions', (c) => c.json(registry.getAll()))
 
 app.get('/api/session-preview/:sessionId', async (c) => {

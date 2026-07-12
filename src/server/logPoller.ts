@@ -174,6 +174,9 @@ export class LogPoller {
   private emptyLogCache: Map<string, number> = new Map()
   // Cache of re-match attempts: sessionId -> timestamp of last attempt
   private rematchAttemptCache: Map<string, number> = new Map()
+  // Age-filter for history rows sent to the match worker. Mirrors the UI's
+  // History max-age so we don't clone the entire agent_sessions table every poll.
+  private getHistoryMaxAgeHours: () => number | undefined
 
   constructor(
     db: SessionDatabase,
@@ -183,6 +186,7 @@ export class LogPoller {
       onSessionActivated,
       onOrphanSessionsDiscovered,
       isLastUserMessageLocked,
+      getHistoryMaxAgeHours,
       maxLogsPerPoll,
       matchProfile,
       rgThreads,
@@ -193,6 +197,8 @@ export class LogPoller {
       onSessionActivated?: (sessionId: string, window: string) => void
       onOrphanSessionsDiscovered?: (stats: { newOrphans: number }) => void
       isLastUserMessageLocked?: (tmuxWindow: string) => boolean
+      /** When set, history sessions older than this many hours are omitted from match payloads. */
+      getHistoryMaxAgeHours?: () => number | undefined
       maxLogsPerPoll?: number
       matchProfile?: boolean
       rgThreads?: number
@@ -206,6 +212,7 @@ export class LogPoller {
     this.onSessionActivated = onSessionActivated
     this.onOrphanSessionsDiscovered = onOrphanSessionsDiscovered
     this.isLastUserMessageLocked = isLastUserMessageLocked
+    this.getHistoryMaxAgeHours = getHistoryMaxAgeHours ?? (() => undefined)
     const limit = maxLogsPerPoll ?? DEFAULT_MAX_LOGS
     this.maxLogsPerPoll = Math.max(1, limit)
     this.matchProfile = matchProfile ?? false
@@ -272,6 +279,40 @@ export class LogPoller {
     }
   }
 
+  /** Active + hibernating + age-filtered history — shared by poll / rematch paths. */
+  private loadSessionRecordsForMatch(): ReturnType<SessionDatabase['getActiveSessions']> {
+    const maxAgeHours = this.getHistoryMaxAgeHours()
+    const history =
+      typeof maxAgeHours === 'number' && Number.isFinite(maxAgeHours) && maxAgeHours > 0
+        ? this.db.getHistorySessions({ maxAgeHours })
+        : this.db.getHistorySessions()
+    return [
+      ...this.db.getActiveSessions(),
+      ...this.db.getHibernatingSessions(),
+      ...history,
+    ]
+  }
+
+  /** Drop expired / oversized cache entries so multi-day uptime doesn't retain every path ever seen. */
+  private pruneMatchCaches(now = Date.now()): void {
+    for (const [sessionId, ts] of this.rematchAttemptCache) {
+      if (now - ts > REMATCH_COOLDOWN_MS * 2) {
+        this.rematchAttemptCache.delete(sessionId)
+      }
+    }
+    // emptyLogCache stores path→size (no timestamps). Cap size; Map iteration is insertion order.
+    const EMPTY_LOG_CACHE_MAX = 500
+    if (this.emptyLogCache.size > EMPTY_LOG_CACHE_MAX) {
+      const drop = this.emptyLogCache.size - EMPTY_LOG_CACHE_MAX
+      let i = 0
+      for (const key of this.emptyLogCache.keys()) {
+        if (i >= drop) break
+        this.emptyLogCache.delete(key)
+        i += 1
+      }
+    }
+  }
+
   private async runOrphanRematchInBackground(): Promise<void> {
     if (this.orphanRematchInProgress || !this.orphanRematchPending) {
       return
@@ -290,11 +331,7 @@ export class LogPoller {
     try {
       const windows = this.registry.getAll()
       const logDirs = getLogSearchDirs()
-      const sessionRecords = [
-        ...this.db.getActiveSessions(),
-        ...this.db.getHibernatingSessions(),
-        ...this.db.getHistorySessions(),
-      ]
+      const sessionRecords = this.loadSessionRecordsForMatch()
       const excludedProjects = config.excludeProjects ?? []
 
       // Build orphan candidates - sessions without active windows
@@ -517,11 +554,7 @@ export class LogPoller {
 
       const windows = this.registry.getAll()
       const logDirs = getLogSearchDirs()
-      const sessionRecords = [
-        ...this.db.getActiveSessions(),
-        ...this.db.getHibernatingSessions(),
-        ...this.db.getHistorySessions(),
-      ]
+      const sessionRecords = this.loadSessionRecordsForMatch()
       const sessions: SessionSnapshot[] = sessionRecords.map((session) => ({
         sessionId: session.sessionId,
         logFilePath: session.logFilePath,
@@ -561,6 +594,7 @@ export class LogPoller {
 
       const stats = this.processMatchResponse(response, windows, sessionRecords)
       this.notifyOrphanSessionsDiscovered(stats.orphans)
+      this.pruneMatchCaches()
     } catch (error) {
       logger.warn('log_poll_changed_error', {
         message: error instanceof Error ? error.message : String(error),
@@ -939,11 +973,7 @@ export class LogPoller {
     try {
       const windows = this.registry.getAll()
       const logDirs = getLogSearchDirs()
-      const sessionRecords = [
-        ...this.db.getActiveSessions(),
-        ...this.db.getHibernatingSessions(),
-        ...this.db.getHistorySessions(),
-      ]
+      const sessionRecords = this.loadSessionRecordsForMatch()
       let shouldBackfillLastMessage = false
       if (this.startupLastMessageBackfillPending) {
         shouldBackfillLastMessage = sessionRecords.some(
@@ -1074,6 +1104,7 @@ export class LogPoller {
 
       logger.info('log_poll', { ...stats })
       this.notifyOrphanSessionsDiscovered(stats.orphans)
+      this.pruneMatchCaches()
       return stats
     } finally {
       this.pollInFlight = false

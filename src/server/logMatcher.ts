@@ -131,7 +131,10 @@ const DEFAULT_LOG_READ_OPTIONS: LogReadOptions = {
   byteLimit: 200 * 1024,
 }
 
-export const DEFAULT_SCROLLBACK_LINES = 10000
+// 10k was the historical default and produced multi‑MB capture-pane strings on
+// every match cycle — a major contributor to multi-day JSC heap growth. 1500
+// lines is enough for exact rg matching of recent user turns without the churn.
+export const DEFAULT_SCROLLBACK_LINES = 1500
 const DEFAULT_LOG_TEXT_MODE: LogTextMode = 'assistant-user'
 const DEFAULT_LOG_TAIL_BYTES = 96 * 1024
 const MIN_TAIL_MATCH_COUNT = 2

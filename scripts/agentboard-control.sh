@@ -20,9 +20,12 @@ LOGROTATE_PLIST="$HOME/Library/LaunchAgents/$LOGROTATE_LABEL.plist"
 
 usage() {
   cat <<EOF
-Usage: agentboard [start|stop|restart|status|logs|install|uninstall|url]
+Usage: agentboard [start|stop|restart|status|logs|install|uninstall|url|recycle]
 
 Default command: start
+
+  recycle  Memory recycle: kickstart LaunchAgent, wait for health, run
+           gh-gateway doctor (same as the weekly Sunday 04:15 job).
 EOF
 }
 
@@ -138,6 +141,9 @@ case "$command" in
   restart)
     stop_service
     start_service
+    ;;
+  recycle)
+    exec /bin/bash "$REPO_DIR/scripts/agentboard-memory-recycle.sh"
     ;;
   status)
     status_service
