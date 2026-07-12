@@ -3,6 +3,7 @@ set -euo pipefail
 
 LABEL="com.agentboard"
 LOGROTATE_LABEL="com.agentboard.logrotate"
+RECYCLE_LABEL="com.agentboard.memory-recycle"
 PORT="${PORT:-47329}"
 URL="http://127.0.0.1:$PORT"
 SOURCE="${BASH_SOURCE[0]}"
@@ -17,6 +18,7 @@ done
 REPO_DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOGROTATE_PLIST="$HOME/Library/LaunchAgents/$LOGROTATE_LABEL.plist"
+RECYCLE_PLIST="$HOME/Library/LaunchAgents/$RECYCLE_LABEL.plist"
 
 usage() {
   cat <<EOF
@@ -125,9 +127,12 @@ tail_logs() {
 
 uninstall_service() {
   stop_service >/dev/null || true
-  launchctl bootout "gui/$(id -u)" "$LOGROTATE_PLIST" >/dev/null 2>&1 || launchctl unload "$LOGROTATE_PLIST" >/dev/null 2>&1 || true
-  rm -f "$PLIST" "$LOGROTATE_PLIST"
-  echo "Agentboard LaunchAgents removed"
+  local domain="gui/$(id -u)"
+  for plist in "$LOGROTATE_PLIST" "$RECYCLE_PLIST"; do
+    launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || launchctl unload "$plist" >/dev/null 2>&1 || true
+  done
+  rm -f "$PLIST" "$LOGROTATE_PLIST" "$RECYCLE_PLIST"
+  echo "Agentboard LaunchAgents removed (main, logrotate, memory-recycle)"
 }
 
 command="${1:-start}"

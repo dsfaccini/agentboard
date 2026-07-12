@@ -1646,4 +1646,107 @@ describe('LogPoller', () => {
 
     db.close()
   })
+
+  test('age-filters history sessions in match payloads', async () => {
+    const db = initDatabase({ path: ':memory:' })
+    const registry = new SessionRegistry()
+    // No live windows — poll still builds a match payload from DB sessions.
+    registry.replaceSessions([])
+
+    const now = Date.now()
+    const recent = new Date(now - 30 * 60 * 1000).toISOString() // 30 min ago
+    const old = new Date(now - 48 * 60 * 60 * 1000).toISOString() // 48 h ago
+
+    db.insertSession({
+      sessionId: 'hist-recent',
+      logFilePath: '/tmp/hist-recent.jsonl',
+      projectPath: baseProjectPath,
+      slug: null,
+      agentType: 'claude',
+      displayName: 'recent-hist',
+      createdAt: recent,
+      lastActivityAt: recent,
+      lastUserMessage: 'hello recent',
+      currentWindow: null,
+      isPinned: false,
+      lastResumeError: null,
+      lastKnownLogSize: 0,
+      isCodexExec: false,
+      launchCommand: null,
+    })
+    db.insertSession({
+      sessionId: 'hist-old',
+      logFilePath: '/tmp/hist-old.jsonl',
+      projectPath: baseProjectPath,
+      slug: null,
+      agentType: 'claude',
+      displayName: 'old-hist',
+      createdAt: old,
+      lastActivityAt: old,
+      lastUserMessage: 'hello old',
+      currentWindow: null,
+      isPinned: false,
+      lastResumeError: null,
+      lastKnownLogSize: 0,
+      isCodexExec: false,
+      launchCommand: null,
+    })
+    // Hibernating (pinned, no window) must always be included even if "old".
+    db.insertSession({
+      sessionId: 'hib-old',
+      logFilePath: '/tmp/hib-old.jsonl',
+      projectPath: baseProjectPath,
+      slug: null,
+      agentType: 'claude',
+      displayName: 'hib-old',
+      createdAt: old,
+      lastActivityAt: old,
+      lastUserMessage: 'hibernating',
+      currentWindow: null,
+      isPinned: true,
+      lastResumeError: null,
+      lastKnownLogSize: 0,
+      isCodexExec: false,
+      launchCommand: null,
+    })
+
+    const captured: string[][] = []
+    const capturingWorker = {
+      async poll(
+        request: Omit<MatchWorkerRequest, 'id'>,
+        _options?: { timeoutMs?: number }
+      ): Promise<MatchWorkerResponse> {
+        captured.push(request.sessions.map((s) => s.sessionId))
+        const response = handleMatchWorkerRequest({ ...request, id: 'test' })
+        if (response.type === 'error') {
+          throw new Error(response.error ?? 'Log match worker error')
+        }
+        return response
+      },
+      dispose(): void {},
+    }
+
+    const poller = new LogPoller(db, registry, {
+      matchWorkerClient: capturingWorker,
+      getHistoryMaxAgeHours: () => 1, // 1 hour — drops 48h-old history
+    })
+    await poller.pollOnce()
+
+    expect(captured.length).toBeGreaterThan(0)
+    const sessionIds = captured[0] ?? []
+    expect(sessionIds).toContain('hist-recent')
+    expect(sessionIds).toContain('hib-old')
+    expect(sessionIds).not.toContain('hist-old')
+
+    // Without age filter, old history is included.
+    captured.length = 0
+    const pollerFull = new LogPoller(db, registry, {
+      matchWorkerClient: capturingWorker,
+      // no getHistoryMaxAgeHours → full history
+    })
+    await pollerFull.pollOnce()
+    expect(captured[0]).toContain('hist-old')
+
+    db.close()
+  })
 })

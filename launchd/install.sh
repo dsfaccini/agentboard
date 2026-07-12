@@ -68,7 +68,7 @@ echo "  Bun:   $BUN_PATH"
 echo "  Tmux:  $TMUX_PATH"
 echo ""
 
-# --- Wrapper script: sets PATH + UTF-8 locale, then execs bun run start.
+# --- Wrapper script: sets PATH + UTF-8 locale, then execs bun src/server/index.ts.
 # LaunchAgents start with a bare env; without LANG set, tmux mangles unicode.
 # PATH covers common agent install locations (~/.local/bin for tools like
 # claude and cursor-agent, Homebrew, ~/.cargo/bin, ~/go/bin) so that tmux
