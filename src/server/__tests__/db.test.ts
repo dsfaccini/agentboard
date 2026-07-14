@@ -396,6 +396,7 @@ describe('db', () => {
     )
     expect(tableInfo?.sql).toContain("'pi'")
     expect(tableInfo?.sql).toContain("'claude-rp'")
+    expect(tableInfo?.sql).toContain("'grok'")
     expect(
       migrated.insertSession(makeSession({
         sessionId: 'legacy-rp-session',
@@ -404,6 +405,14 @@ describe('db', () => {
         currentWindow: null,
       })).agentType
     ).toBe('claude-rp')
+    expect(
+      migrated.insertSession(makeSession({
+        sessionId: 'legacy-grok-session',
+        logFilePath: '/tmp/legacy-grok-session.jsonl',
+        agentType: 'grok',
+        currentWindow: null,
+      })).agentType
+    ).toBe('grok')
 
     migrated.close()
     fs.rmSync(tempDir, { recursive: true, force: true })

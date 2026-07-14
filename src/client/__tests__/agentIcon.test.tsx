@@ -48,6 +48,15 @@ describe('AgentIcon', () => {
     expect(renderer.root.findByProps({ 'aria-label': 'OpenAI' })).toBeTruthy()
   })
 
+  test('renders Grok icon for grok sessions', () => {
+    const renderer = TestRenderer.create(
+      <AgentIcon agentType="grok" className="icon" />
+    )
+
+    const icon = renderer.root.findByProps({ 'aria-label': 'Grok' })
+    expect(icon.props.className).toBe('icon')
+  })
+
   test('falls back to terminal icon for unknown agent', () => {
     const renderer = TestRenderer.create(
       <AgentIcon command="bash" className="fallback" />

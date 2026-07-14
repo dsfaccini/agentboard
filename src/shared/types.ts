@@ -5,7 +5,7 @@ export const HISTORY_MAX_AGE_MAX_HOURS = 168 // 7 days
 export type SessionStatus = 'working' | 'waiting' | 'permission' | 'unknown'
 
 export type SessionSource = 'managed' | 'external'
-export type AgentType = 'claude' | 'claude-rp' | 'codex' | 'pi'
+export type AgentType = 'claude' | 'claude-rp' | 'codex' | 'pi' | 'grok'
 export type SessionKillSource =
   | 'keyboard_shortcut'
   | 'session_list_context_menu'

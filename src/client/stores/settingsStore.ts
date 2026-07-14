@@ -47,19 +47,24 @@ export type SessionSortDirection = 'asc' | 'desc'
 export type ShortcutModifier = 'ctrl-option' | 'ctrl-shift' | 'cmd-option' | 'cmd-shift'
 
 // Command preset system
+export type PresetAgentType = 'claude' | 'codex' | 'pi' | 'grok'
+
 export interface CommandPreset {
   id: string
   label: string
   command: string
   isBuiltIn: boolean
-  agentType?: 'claude' | 'codex' | 'pi'
+  agentType?: PresetAgentType
 }
 
 export const DEFAULT_PRESETS: CommandPreset[] = [
   { id: 'claude', label: 'Claude', command: 'claude', isBuiltIn: true, agentType: 'claude' },
   { id: 'codex', label: 'Codex', command: 'codex', isBuiltIn: true, agentType: 'codex' },
   { id: 'pi', label: 'Pi', command: 'pi', isBuiltIn: true, agentType: 'pi' },
+  { id: 'grok', label: 'Grok', command: 'grok', isBuiltIn: true, agentType: 'grok' },
 ]
+
+const PRESET_AGENT_TYPES = new Set<string>(['claude', 'codex', 'pi', 'grok'])
 
 // Validation and helper functions
 export function isValidPreset(p: unknown): p is CommandPreset {
@@ -70,7 +75,7 @@ export function isValidPreset(p: unknown): p is CommandPreset {
     typeof obj.label === 'string' && obj.label.trim().length >= 1 && obj.label.length <= 64 &&
     typeof obj.command === 'string' && obj.command.trim().length >= 1 && obj.command.length <= 1024 &&
     typeof obj.isBuiltIn === 'boolean' &&
-    (obj.agentType === undefined || obj.agentType === 'claude' || obj.agentType === 'codex' || obj.agentType === 'pi')
+    (obj.agentType === undefined || PRESET_AGENT_TYPES.has(obj.agentType as string))
   )
 }
 
@@ -267,7 +272,7 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'agentboard-settings',
       storage: createJSONStorage(() => safeStorage),
-      version: 6,
+      version: 7,
       partialize: (state) => {
         // Exclude manualSessionOrder from persistence (session-only state)
         const { manualSessionOrder: _, ...rest } = state
@@ -303,7 +308,7 @@ export const useSettingsStore = create<SettingsState>()(
             label: p.label as string,
             command: command || 'claude',
             isBuiltIn: p.isBuiltIn as boolean,
-            agentType: p.agentType as 'claude' | 'codex' | 'pi' | undefined,
+            agentType: p.agentType as PresetAgentType | undefined,
           }
         }
 
@@ -368,8 +373,8 @@ export const useSettingsStore = create<SettingsState>()(
         const missingBuiltIns = DEFAULT_PRESETS.filter(p => p.isBuiltIn && !existingIds.has(p.id))
         const finalPresets = [...trimmedPresets, ...missingBuiltIns]
 
-        if (version < 6) {
-          console.info(`[agentboard:settings] Migrated from v${version} to v6`)
+        if (version < 7) {
+          console.info(`[agentboard:settings] Migrated from v${version} to v7`)
         }
 
         return {

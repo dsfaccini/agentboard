@@ -133,11 +133,23 @@ describe('command preset helpers', () => {
     }
 
     expect(isValidPreset(valid)).toBe(true)
+    expect(isValidPreset({ ...valid, agentType: 'grok' as const })).toBe(true)
     expect(isValidPreset({ ...valid, id: '' })).toBe(false)
     expect(isValidPreset({ ...valid, label: '   ' })).toBe(false)
     expect(isValidPreset({ ...valid, command: '' })).toBe(false)
     expect(isValidPreset({ ...valid, agentType: 'other' as const })).toBe(false)
     expect(isValidPreset(null)).toBe(false)
+  })
+
+  test('DEFAULT_PRESETS includes grok', () => {
+    const grok = DEFAULT_PRESETS.find((p) => p.id === 'grok')
+    expect(grok).toEqual({
+      id: 'grok',
+      label: 'Grok',
+      command: 'grok',
+      isBuiltIn: true,
+      agentType: 'grok',
+    })
   })
 
   test('normalizes presets and builds full commands', () => {
@@ -385,7 +397,7 @@ describe('preset migration', () => {
 describe('settings persistence migration', () => {
   test('runs the hibernating/history expansion rename for v5 persisted state', async () => {
     const options = useSettingsStore.persist.getOptions()
-    expect(options.version).toBe(6)
+    expect(options.version).toBe(7)
     if (!options.migrate) {
       throw new Error('Expected settings migration to be configured')
     }
