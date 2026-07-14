@@ -82,6 +82,7 @@ const defaultConfig = {
   tmuxTimeoutMs: 3000,
   tmuxMutationTimeoutMs: 15000,
   pasteImageMaxBytes: 20 * 1024 * 1024,
+  claudeNoFlicker: true,
 }
 
 const configState = { ...defaultConfig }

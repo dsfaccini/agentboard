@@ -88,8 +88,8 @@ security → perf/safety → features.
 
 ## Sync state vs upstream
 
-**Synced through upstream v0.3.3** (cherry-picked onto our tree; we now report
-`version: 0.3.3`). Re-evaluate future drift with
+**Synced through upstream v0.4.4** (cherry-picked onto our tree; we now report
+`version: 0.4.4`). Re-evaluate future drift with
 `git fetch upstream && git log --oneline master..upstream/master`.
 
 | Upstream change | Verdict / status |
@@ -99,6 +99,7 @@ security → perf/safety → features.
 | `11c458c` shell-quote→1.8.4 (GHSA) | **taken (defensive)** — we removed `concurrently` so we don't pull shell-quote; added `"overrides": { "shell-quote": "^1.8.4" }` as a guard. |
 | `f75202d` agent-aware clipboard image paste (swift NSPasteboard) | **taken** — cherry-picked. Dropped upstream's unused `pasteImageExtensionByMime` map (our `/api/paste-image` uses its own `allowedTypes`); added `pasteImageMaxBytes` to the `indexHandlers.test.ts` mock config. |
 | `9166cd3`→`2683d02`→`33b125b`→`b52bb0f` hibernated/Codex transcript reader | **taken** — cherry-picked as a unit (adds `react-markdown`/`remark-*`, `src/shared/json.ts`, `33b125b` tail-read perf). Dual overlay fix reconciled: our `isolate` (Terminal.tsx className) **and** upstream's `inert` (`container.inert`) both present. |
+| `1274fb4`→`dc152e3`→`5216db9`→`e033ec4`→`fde1916` Claude fullscreen mouse + paste (v0.4.0–0.4.4) | **taken as a unit** — no-flicker default (`AGENTBOARD_CLAUDE_NO_FLICKER=0` opt-out), app-mouse wheel/click, tmux clipboard poll (async, no clobber, `set-clipboard on`), bracketed image-path paste, `terminal-paste` via `paste-buffer -p`. Kept: dispose-on-attach-fail, wheel SGR batching + `!appMouse` copy-mode gate, grouped `:1` copy-mode target assertion, Grok `AgentType`, our slug-supersede real-tmux integration test (upstream rewrote to unit — skipped their rewrite), package scripts/overrides/vite, MIME allowlist + size caps. |
 
 ### Naive-sync hazards (do NOT)
 
@@ -109,6 +110,11 @@ security → perf/safety → features.
 - **Don't cherry-pick `9eec9db`/`000f9ad`** — re-conflicts our equivalent code.
 - **Don't drop either half of the overlay fix** — ours (`isolate`) and upstream's
   (`inert`, in `9166cd3`) fix the same click bug; keep both, test before trusting.
+- **Don't drop attach-fail `dispose()` in `PtyTerminalProxy`** — upstream still
+  lacks it; orphans `…-ws-<uuid>` sessions (pty-pool exhaustion class).
+- **Don't drop batched wheel SGR sends** when re-merging `useTerminal` — keep
+  one `terminal-input` per accum flush; only gate `requestCopyModeCheck` on
+  `!appMouseRef`.
 
 ## Watch-list (recurring concerns as we use this more)
 
