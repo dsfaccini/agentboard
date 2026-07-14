@@ -1551,6 +1551,35 @@ describe('SessionManager', () => {
     fs.rmSync(tempDir, { recursive: true, force: true })
   })
 
+  test('createWindow with empty command launches the user shell', () => {
+    const sessionName = 'agentboard-shell'
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentboard-'))
+    const shell = process.env.SHELL?.trim() || '/bin/sh'
+    const runner = createTmuxRunner(
+      [{ name: sessionName, windows: [
+        { id: '0', index: 0, name: 'existing', path: tempDir, activity: 0, command: 'claude' },
+      ] }],
+      0
+    )
+
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent: () => makePaneCapture(''),
+      now: () => 1700000000000,
+    })
+
+    manager.createWindow(tempDir, 'shell-session')
+
+    const newWindowCalls = runner.calls.filter(
+      (call) => getTmuxCommand(call) === 'new-window'
+    )
+    expect(newWindowCalls.length).toBe(1)
+    expect(newWindowCalls[0]).toContain(shell)
+    expect(newWindowCalls[0]).not.toContain('claude')
+
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  })
+
   test('listWindows strips tmux double-quotes from pane_start_command', () => {
     const sessionName = 'agentboard-quote-strip'
     const runner = createTmuxRunner(

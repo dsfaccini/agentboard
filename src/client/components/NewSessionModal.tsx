@@ -365,11 +365,11 @@ export default function NewSessionModal({
               })}
             </div>
 
-            {/* Full command input */}
+            {/* Full command input — empty Custom launches a plain shell */}
             <input
               value={command}
               onChange={(event) => setCommand(event.target.value)}
-              placeholder="Enter command..."
+              placeholder={isCustomMode ? 'shell (leave empty) or enter command...' : 'Enter command...'}
               className="input mt-2 font-mono text-xs"
             />
           </div>

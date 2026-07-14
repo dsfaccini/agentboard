@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { inferAgentType, normalizePaneStartCommand } from './agentDetection'
+import { inferAgentType, normalizePaneStartCommand, resolveSessionCommand } from './agentDetection'
 import { config } from './config'
 import { resolveExternalDisplayName } from './displayName'
 import { normalizeProjectPath } from './logDiscovery'
@@ -389,7 +389,7 @@ export class SessionManager {
     }
     this.assertNotReservedWindowName(baseName)
 
-    const finalCommand = command?.trim() || 'claude'
+    const finalCommand = resolveSessionCommand(command)
     const finalName = this.findAvailableName(baseName, existingWindowNames, nameExists)
 
     if (!sessionExisted) {

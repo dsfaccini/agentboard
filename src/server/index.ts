@@ -2252,14 +2252,18 @@ async function handleRemoteCreate(
     const hasSessionResult = await runRemoteTmux(host, ['has-session', '-t', tmuxSession])
     const sessionExists = hasSessionResult.exitCode === 0
 
-    const windowCommand = normalizePaneStartCommand(command?.trim() || '') || 'claude'
-    // Wrap in interactive login shell so .bashrc PATH is available
-    // (non-interactive shells skip .bashrc due to [ -z "$PS1" ] && return guard).
+    // Empty command = plain interactive shell (Custom preset with no command).
+    // Wrap agent commands in an interactive login shell so .bashrc PATH is
+    // available (non-interactive shells skip .bashrc due to [ -z "$PS1" ] && return).
     // Fall back to raw command on systems without bash (e.g. Alpine).
+    const windowCommand = normalizePaneStartCommand(command?.trim() || '')
     const bashCheck = await runRemoteSsh(host, 'command -v bash')
-    const wrappedCommand = bashCheck.exitCode === 0
-      ? `bash -lic ${shellQuote(windowCommand)}`
-      : windowCommand
+    const hasBash = bashCheck.exitCode === 0
+    const wrappedCommand = !windowCommand
+      ? (hasBash ? 'bash -li' : 'sh -i')
+      : hasBash
+        ? `bash -lic ${shellQuote(windowCommand)}`
+        : windowCommand
     let createResult: { exitCode: number; stdout: string; stderr: string }
 
     if (sessionExists) {

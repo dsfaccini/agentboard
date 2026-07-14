@@ -155,6 +155,57 @@ describe('NewSessionModal component', () => {
     })
   })
 
+  test('submits undefined command for empty Custom (server opens shell)', () => {
+    setupDom()
+
+    const created: Array<{ path: string; name?: string; command?: string }> = []
+
+    let renderer!: TestRenderer.ReactTestRenderer
+
+    act(() => {
+      renderer = TestRenderer.create(
+        <NewSessionModal
+          isOpen
+          onClose={() => {}}
+          onCreate={(path, name, command) => {
+            created.push({ path, name, command })
+          }}
+          defaultProjectDir="/base"
+          commandPresets={DEFAULT_PRESETS}
+          defaultPresetId="claude"
+          lastProjectPath="/last"
+          activeProjectPath="/active"
+        />
+      )
+    })
+
+    const buttons = renderer.root.findAllByType('button')
+    const customButton = buttons.find((button) => {
+      const children = Array.isArray(button.props.children)
+        ? button.props.children
+        : [button.props.children]
+      return children.some((c: unknown) => c === 'Custom')
+    })
+    if (!customButton) throw new Error('Expected custom command button')
+
+    act(() => {
+      customButton.props.onClick()
+    })
+
+    const form = renderer.root.findByType('form')
+    act(() => {
+      form.props.onSubmit({ preventDefault: () => {} })
+    })
+
+    expect(created).toEqual([
+      { path: '/active', name: undefined, command: undefined },
+    ])
+
+    act(() => {
+      renderer.unmount()
+    })
+  })
+
   test('allows editing full command', () => {
     setupDom()
 

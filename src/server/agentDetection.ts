@@ -3,6 +3,17 @@
 
 import type { AgentType } from '../shared/types'
 
+/**
+ * Resolve the command to launch in a new tmux window.
+ * Empty/undefined means "plain shell" (Custom preset with no command),
+ * not a default agent — that used to silently start claude.
+ */
+export function resolveSessionCommand(command?: string | null): string {
+  const trimmed = command?.trim()
+  if (trimmed) return trimmed
+  return process.env.SHELL?.trim() || '/bin/sh'
+}
+
 function unquoteShellString(value: string): string {
   const trimmed = value.trim()
   if (trimmed.length >= 2) {
@@ -123,6 +134,9 @@ export function inferAgentType(command: string): AgentType | undefined {
     }
     if (baseName === 'pi') {
       return 'pi'
+    }
+    if (baseName === 'grok') {
+      return 'grok'
     }
 
     // Found a non-skippable command that isn't a known agent
