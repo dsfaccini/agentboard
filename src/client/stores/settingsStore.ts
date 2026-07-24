@@ -273,11 +273,6 @@ export const useSettingsStore = create<SettingsState>()(
       name: 'agentboard-settings',
       storage: createJSONStorage(() => safeStorage),
       version: 7,
-      partialize: (state) => {
-        // Exclude manualSessionOrder from persistence (session-only state)
-        const { manualSessionOrder: _, ...rest } = state
-        return rest
-      },
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as Record<string, unknown>
         if (
