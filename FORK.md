@@ -88,8 +88,8 @@ security → perf/safety → features.
 
 ## Sync state vs upstream
 
-**Synced through upstream v0.4.4** (cherry-picked onto our tree; we now report
-`version: 0.4.4`). Re-evaluate future drift with
+**Synced through upstream v0.4.5** (cherry-picked onto our tree; we now report
+`version: 0.4.5`). Re-evaluate future drift with
 `git fetch upstream && git log --oneline master..upstream/master`.
 
 | Upstream change | Verdict / status |
@@ -100,6 +100,11 @@ security → perf/safety → features.
 | `f75202d` agent-aware clipboard image paste (swift NSPasteboard) | **taken** — cherry-picked. Dropped upstream's unused `pasteImageExtensionByMime` map (our `/api/paste-image` uses its own `allowedTypes`); added `pasteImageMaxBytes` to the `indexHandlers.test.ts` mock config. |
 | `9166cd3`→`2683d02`→`33b125b`→`b52bb0f` hibernated/Codex transcript reader | **taken** — cherry-picked as a unit (adds `react-markdown`/`remark-*`, `src/shared/json.ts`, `33b125b` tail-read perf). Dual overlay fix reconciled: our `isolate` (Terminal.tsx className) **and** upstream's `inert` (`container.inert`) both present. |
 | `1274fb4`→`dc152e3`→`5216db9`→`e033ec4`→`fde1916` Claude fullscreen mouse + paste (v0.4.0–0.4.4) | **taken as a unit** — no-flicker default (`AGENTBOARD_CLAUDE_NO_FLICKER=0` opt-out), app-mouse wheel/click, tmux clipboard poll (async, no clobber, `set-clipboard on`), bracketed image-path paste, `terminal-paste` via `paste-buffer -p`. Kept: dispose-on-attach-fail, wheel SGR batching + `!appMouse` copy-mode gate, grouped `:1` copy-mode target assertion, Grok `AgentType`, our slug-supersede real-tmux integration test (upstream rewrote to unit — skipped their rewrite), package scripts/overrides/vite, MIME allowlist + size caps. |
+| `da573f8`→`fae5bb0`→`ca7cd62`→`22ba6f4`→`6b23415` pty paste + settings (v0.4.5) | **taken** — list-clients identity (#165), paste into lastEffectiveSession (#166), runtime prefer-window-name toggle (#167), settings PUT harden + paste regression tests, persist manualSessionOrder (#169). Kept our settings store `version: 7` when dropping the partialize exclusion. |
+| `6801692`→`f900ea9`→`fb2638b` test isolation | **taken** — per-file process isolation for `isolated/` + motion client tests; sessionListComponent window stub lifecycle. |
+| `90b1d0a` session-list layout snap (#170) | **taken (parallel)** — same idea as our `746ec57` (drop popLayout + layout springs). Did not re-cherry-pick; ours already landed. |
+| `2e6903f` dispose grouped session on attach fail (#160) | **already had** — our earlier `2c80fe3` / FORK attach-fail dispose. |
+| `f8c6bbf`→`6f7a705` CI SHA pins + Dependabot (#173–#178) | **deferred** — supply-chain hygiene for release workflows we don't run; re-evaluate when we care about GH Actions pinning. |
 
 ### Naive-sync hazards (do NOT)
 
@@ -110,8 +115,9 @@ security → perf/safety → features.
 - **Don't cherry-pick `9eec9db`/`000f9ad`** — re-conflicts our equivalent code.
 - **Don't drop either half of the overlay fix** — ours (`isolate`) and upstream's
   (`inert`, in `9166cd3`) fix the same click bug; keep both, test before trusting.
-- **Don't drop attach-fail `dispose()` in `PtyTerminalProxy`** — upstream still
-  lacks it; orphans `…-ws-<uuid>` sessions (pty-pool exhaustion class).
+- **Don't drop attach-fail `dispose()` in `PtyTerminalProxy`** — orphans
+  `…-ws-<uuid>` sessions (pty-pool exhaustion class). Upstream has this as of
+  `2e6903f` (#160); keep both sides' version of the guard when re-merging.
 - **Don't drop batched wheel SGR sends** when re-merging `useTerminal` — keep
   one `terminal-input` per accum flush; only gate `requestCopyModeCheck` on
   `!appMouseRef`.
