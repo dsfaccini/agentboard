@@ -16,15 +16,17 @@ if (!tmuxAvailable) {
     const commandDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentboard-agb-bin-'))
     const databasePath = path.join(homeDir, '.agentboard', 'agentboard.db')
     const tmuxTmpDir = createTmuxTmpDir('agentboard-tmux-agb-')
-    const sessionName = `agentboard-agb-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const sessionName = 'david-agb'
+    const managerSessionName = `agentboard-agb-manager-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const commandRecordPath = path.join(homeDir, 'agent-command.txt')
     const scriptPath = path.join(process.cwd(), 'scripts', 'agb')
     const environment: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: homeDir,
       PATH: `${commandDir}:${process.env.PATH ?? ''}`,
       TMUX_TMPDIR: tmuxTmpDir,
-      TMUX_SESSION: sessionName,
       AGENTBOARD_DB_PATH: databasePath,
+      AGB_TEST_RECORD_PATH: commandRecordPath,
       AGB_SKIP_SERVICE_CHECK: '1',
       AGB_NO_ATTACH: '1',
       AGB_SUSPEND_TIMEOUT_SECONDS: '2',
@@ -34,7 +36,7 @@ if (!tmuxAvailable) {
       const claudePath = path.join(commandDir, 'claude')
       fs.writeFileSync(
         claudePath,
-        '#!/bin/bash\nwhile IFS= read -r line; do\n  [ "$line" = "/exit" ] && exit 0\ndone\n'
+        '#!/bin/bash\nif [ -n "${AGB_TEST_RECORD_PATH:-}" ]; then\n  printf "%s\\n%s\\n" "$PWD" "$*" > "$AGB_TEST_RECORD_PATH"\nfi\nwhile IFS= read -r line; do\n  [ "$line" = "/exit" ] && exit 0\ndone\n'
       )
       fs.chmodSync(claudePath, 0o755)
 
@@ -52,6 +54,16 @@ if (!tmuxAvailable) {
       fs.rmSync(projectPath, { recursive: true, force: true })
       fs.rmSync(commandDir, { recursive: true, force: true })
       fs.rmSync(tmuxTmpDir, { recursive: true, force: true })
+    })
+
+    test('documents David and manager launch controls', () => {
+      const result = runAgb(['--help'])
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('Options for David:')
+      expect(result.stdout).toContain('The default\n                    is david-agb')
+      expect(result.stdout).toContain('Options for the Claude manager and launch helpers:')
+      expect(result.stdout).toContain('--in-current-window')
     })
 
     test('starts a tagged agent window from an explicit path', () => {
@@ -135,15 +147,93 @@ if (!tmuxAvailable) {
       expect(result.stdout).toContain('claude --resume agb-claude-session')
     })
 
+    test('starts a manager Claude in its existing window with model arguments', async () => {
+      const created = Bun.spawnSync(
+        [
+          'tmux',
+          'new-session',
+          '-d',
+          '-P',
+          '-F',
+          '#{window_id}',
+          '-s',
+          managerSessionName,
+          '-n',
+          'manager-worker',
+          '-c',
+          projectPath,
+        ],
+        { env: environment, stdout: 'pipe', stderr: 'pipe' }
+      )
+      expect(created.exitCode).toBe(0)
+      const tmuxWindow = created.stdout.toString().trim()
+      expect(tmuxWindow).toMatch(/^@\d+$/)
+
+      fs.rmSync(commandRecordPath, { force: true })
+      const started = Bun.spawnSync(
+        [
+          'tmux',
+          'send-keys',
+          '-t',
+          tmuxWindow,
+          `exec ${shellQuote(scriptPath)} claude --in-current-window -- --model opus`,
+          'Enter',
+        ],
+        { env: environment, stdout: 'pipe', stderr: 'pipe' }
+      )
+      expect(started.exitCode).toBe(0)
+      await waitForFile(commandRecordPath)
+
+      const [recordedPath, recordedArgs] = fs.readFileSync(commandRecordPath, 'utf8').trim().split('\n')
+      expect(recordedPath).toBe(fs.realpathSync(projectPath))
+      expect(recordedArgs).toBe('--model opus')
+
+      const tag = Bun.spawnSync(['tmux', 'show-options', '-w', '-v', '-t', tmuxWindow, '@agentboard_agb'], {
+        env: environment,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      expect(tag.stdout.toString().trim()).toBe('1')
+
+      const db = initDatabase({ path: databasePath })
+      db.insertSession({
+        sessionId: 'agb-manager-claude-session',
+        logFilePath: path.join(homeDir, 'manager-claude-session.jsonl'),
+        projectPath: fs.realpathSync(projectPath),
+        slug: null,
+        agentType: 'claude',
+        displayName: 'agentboard-agb-manager-project',
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        lastUserMessage: null,
+        currentWindow: tmuxWindow,
+        isPinned: false,
+        lastResumeError: null,
+        lastKnownLogSize: null,
+        isCodexExec: false,
+        launchCommand: 'claude --model opus',
+      })
+      db.close()
+
+      const suspended = runAgb(['suspend', '--all'])
+      expect(suspended.exitCode).toBe(0)
+      expect(suspended.stdout).toContain('Suspended claude session agb-manager-claude-session')
+
+      const hibernated = initDatabase({ path: databasePath })
+      hibernated.orphanSession('agb-manager-claude-session')
+      hibernated.close()
+    })
+
     test('suspends Pi with its graceful quit command', () => {
-      const started = runAgb(['pi', projectPath])
+      const piSessionName = `agentboard-agb-pi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const started = runAgb(['pi', projectPath, '--session', piSessionName])
       if (started.exitCode !== 0) {
         throw new Error(started.stderr)
       }
       expect(started.exitCode).toBe(0)
 
       const window = Bun.spawnSync(
-        ['tmux', 'list-windows', '-t', `=${sessionName}`, '-F', '#{window_id}'],
+        ['tmux', 'list-windows', '-t', `=${piSessionName}`, '-F', '#{window_id}'],
         { env: environment, stdout: 'pipe', stderr: 'pipe' }
       )
       const tmuxWindow = window.stdout.toString().trim()
@@ -186,6 +276,20 @@ if (!tmuxAvailable) {
         exitCode: result.exitCode,
         stdout: result.stdout.toString(),
         stderr: result.stderr.toString(),
+      }
+    }
+
+    function shellQuote(value: string): string {
+      return `'${value.replaceAll("'", "'\\\"'\\\"'")}'`
+    }
+
+    async function waitForFile(filePath: string): Promise<void> {
+      const deadline = Date.now() + 2000
+      while (!fs.existsSync(filePath) && Date.now() < deadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 20))
+      }
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`Timed out waiting for ${filePath}`)
       }
     }
   })

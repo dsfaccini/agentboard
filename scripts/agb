@@ -12,7 +12,7 @@ while [ -L "$SOURCE" ]; do
 done
 REPO_DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 
-TMUX_SESSION_NAME="${TMUX_SESSION:-agentboard}"
+TMUX_SESSION_NAME="${AGB_SESSION:-david-agb}"
 AGENTBOARD_DIR="${AGENTBOARD_DIR:-$HOME/.agentboard}"
 AGENTBOARD_DB_PATH="${AGENTBOARD_DB_PATH:-$AGENTBOARD_DIR/agentboard.db}"
 TRANSCRIPT_DIR="${AGB_TRANSCRIPT_DIR:-$AGENTBOARD_DIR/agb/transcripts}"
@@ -22,7 +22,7 @@ MAX_TRANSCRIPT_BYTES=1048576
 usage() {
   cat <<'EOF'
 Usage:
-  agb <claude|codex|pi|grok> [path]
+  agb <claude|codex|pi|grok> [path] [options] [-- agent arguments]
   agb suspend --all
   agb list
 
@@ -32,9 +32,27 @@ with Ctrl-b d and continue in Agentboard or another tmux client.
 
 Examples:
   cd ~/pydantic/ai/base && agb claude
-  agb pi ~/projects/example
+  agb claude ~/projects/example --session experiments
+  agb claude --window investigate -- --model opus
   agb suspend --all
   agb list
+
+Options for David:
+  --session <name>  Put a new direct session in this tmux session. The default
+                    is david-agb, so your normal sessions are predictable and
+                    separate from manager-owned agent-N sessions.
+  --window <name>   Name the new tmux window. The default is the project
+                    directory name, which keeps your Agentboard list legible.
+
+Options for the Claude manager and launch helpers:
+  --in-current-window  Start the agent in the tmux window that already runs
+                       the command. This preserves the manager's claimed
+                       agent-N session and required window name.
+  --no-attach          Create a new window without taking the invoking tmux
+                       client away from its manager or automation.
+  -- <agent arguments> Pass arguments directly to the agent. The manager uses
+                       this for its explicit Claude model without changing
+                       David's global Claude default.
 
 Only sessions created with `agb` are suspended. Claude receives `/exit`; Pi
 receives `/quit`. Before asking the agent to exit, `agb` saves its final tmux
@@ -79,8 +97,11 @@ resolve_path() {
 new_window() {
   local agent="$1"
   local project_path="$2"
-  local window_name
-  window_name="$(basename "$project_path")"
+  local session_name="$3"
+  local window_name="$4"
+  local no_attach="$5"
+  shift 5
+  local agent_arg_count="$#"
 
   local use_claude_no_flicker=false
   if [ "$agent" = "claude" ] && [ "${AGENTBOARD_CLAUDE_NO_FLICKER:-true}" != "0" ] && [ "${AGENTBOARD_CLAUDE_NO_FLICKER:-true}" != "false" ]; then
@@ -88,19 +109,20 @@ new_window() {
   fi
 
   local tmux_window
-  if tmux has-session -t "=$TMUX_SESSION_NAME" 2>/dev/null; then
-    if [ "$use_claude_no_flicker" = true ]; then
-      tmux_window="$(tmux new-window -d -P -F '#{window_id}' -t "=$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path" -e 'CLAUDE_CODE_NO_FLICKER=1' "$agent")"
-    else
-      tmux_window="$(tmux new-window -d -P -F '#{window_id}' -t "=$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path" "$agent")"
-    fi
+  local -a tmux_command
+  if tmux has-session -t "=$session_name" 2>/dev/null; then
+    tmux_command=(tmux new-window -d -P -F '#{window_id}' -t "=$session_name" -n "$window_name" -c "$project_path")
   else
-    if [ "$use_claude_no_flicker" = true ]; then
-      tmux_window="$(tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path" -e 'CLAUDE_CODE_NO_FLICKER=1' "$agent")"
-    else
-      tmux_window="$(tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path" "$agent")"
-    fi
+    tmux_command=(tmux new-session -d -P -F '#{window_id}' -s "$session_name" -n "$window_name" -c "$project_path")
   fi
+  if [ "$use_claude_no_flicker" = true ]; then
+    tmux_command+=(env 'CLAUDE_CODE_NO_FLICKER=1')
+  fi
+  tmux_command+=("$agent")
+  if [ "$agent_arg_count" -gt 0 ]; then
+    tmux_command+=("$@")
+  fi
+  tmux_window="$("${tmux_command[@]}")"
 
   tmux set-option -w -t "$tmux_window" @agentboard_agb 1
   tmux set-option -w -t "$tmux_window" @agentboard_agent "$agent"
@@ -109,7 +131,7 @@ new_window() {
   tmux_target="$(tmux display-message -p -t "$tmux_window" '#{session_name}:#{window_index}')"
   echo "Started $agent in $project_path ($tmux_target)"
 
-  if [ "${AGB_NO_ATTACH:-}" = "1" ]; then
+  if [ "$no_attach" = true ]; then
     return
   fi
 
@@ -117,6 +139,107 @@ new_window() {
     exec tmux switch-client -t "$tmux_target"
   fi
   exec tmux attach-session -t "$tmux_target"
+}
+
+start_in_current_window() {
+  local agent="$1"
+  local project_path="$2"
+  shift 2
+
+  [ -n "${TMUX:-}" ] || fail "--in-current-window requires a tmux window"
+  cd "$project_path"
+
+  local tmux_window
+  tmux_window="$(tmux display-message -p '#{window_id}')"
+  [ -n "$tmux_window" ] || fail "could not identify the current tmux window"
+  tmux set-option -w -t "$tmux_window" @agentboard_agb 1
+  tmux set-option -w -t "$tmux_window" @agentboard_agent "$agent"
+  echo "Started $agent in existing tmux window at $project_path"
+
+  if [ "$#" -gt 0 ]; then
+    exec "$agent" "$@"
+  fi
+  exec "$agent"
+}
+
+start_agent() {
+  local agent="$1"
+  shift
+
+  local requested_path="$PWD"
+  local has_path=false
+  local session_name="$TMUX_SESSION_NAME"
+  local window_name=""
+  local in_current_window=false
+  local no_attach=false
+  if [ "${AGB_NO_ATTACH:-}" = "1" ]; then
+    no_attach=true
+  fi
+  local agent_arg_count=0
+  local agent_args
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --session)
+        [ "$#" -ge 2 ] || fail "--session needs a tmux session name"
+        session_name="$2"
+        shift 2
+        ;;
+      --window)
+        [ "$#" -ge 2 ] || fail "--window needs a tmux window name"
+        window_name="$2"
+        shift 2
+        ;;
+      --in-current-window)
+        in_current_window=true
+        shift
+        ;;
+      --no-attach)
+        no_attach=true
+        shift
+        ;;
+      --)
+        shift
+        agent_arg_count="$#"
+        if [ "$agent_arg_count" -gt 0 ]; then
+          agent_args=("$@")
+        fi
+        break
+        ;;
+      -h|--help)
+        usage
+        return
+        ;;
+      -*)
+        fail "unknown option '$1'; run 'agb --help'"
+        ;;
+      *)
+        [ "$has_path" = false ] || fail "expected at most one path; run 'agb --help'"
+        requested_path="$1"
+        has_path=true
+        shift
+        ;;
+    esac
+  done
+
+  local project_path
+  project_path="$(resolve_path "$requested_path")"
+  ensure_agentboard
+  if [ "$in_current_window" = true ]; then
+    if [ "$agent_arg_count" -gt 0 ]; then
+      start_in_current_window "$agent" "$project_path" "${agent_args[@]}"
+    else
+      start_in_current_window "$agent" "$project_path"
+    fi
+    return
+  fi
+
+  [ -n "$window_name" ] || window_name="$(basename "$project_path")"
+  if [ "$agent_arg_count" -gt 0 ]; then
+    new_window "$agent" "$project_path" "$session_name" "$window_name" "$no_attach" "${agent_args[@]}"
+  else
+    new_window "$agent" "$project_path" "$session_name" "$window_name" "$no_attach"
+  fi
 }
 
 resume_command() {
@@ -170,9 +293,9 @@ suspend_all() {
   fi
 
   local tagged_windows
-  tagged_windows="$(tmux list-windows -t "=$TMUX_SESSION_NAME" -F $'#{window_id}\t#{@agentboard_agb}\t#{@agentboard_agent}' 2>/dev/null || true)"
+  tagged_windows="$(tmux list-windows -a -F $'#{window_id}\t#{@agentboard_agb}\t#{@agentboard_agent}' 2>/dev/null || true)"
   if [ -z "$tagged_windows" ]; then
-    echo "No Agentboard tmux session named $TMUX_SESSION_NAME."
+    echo "No sessions created by agb were found."
     return
   fi
 
@@ -267,9 +390,7 @@ list_sessions() {
 
 case "${1:-}" in
   claude|codex|pi|grok)
-    [ "$#" -le 2 ] || fail "expected at most one path; run 'agb --help'"
-    ensure_agentboard
-    new_window "$1" "$(resolve_path "${2:-$PWD}")"
+    start_agent "$@"
     ;;
   suspend)
     [ "${2:-}" = "--all" ] && [ "$#" -eq 2 ] || fail "use 'agb suspend --all'"

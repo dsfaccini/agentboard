@@ -41,8 +41,9 @@ agentboard recycle  # Memory recycle now (same as weekly job)
 agentboard logs     # Tail app + launchd logs
 
 # Interactive sessions in Agentboard tmux (installed in ~/.local/bin)
-agb claude          # Start from the current directory and attach to tmux
+agb claude          # Start in the personal david-agb session and attach
 agb pi ~/work/app   # Start from an explicit directory
+agb claude --session experiments  # Use a separate personal tmux session
 agb suspend --all   # Gracefully suspend only sessions started through agb
 agb list            # Show hibernating sessions and resume commands
 
