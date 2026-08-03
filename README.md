@@ -85,6 +85,27 @@ Then open `http://localhost:47329` (or `http://<your-machine>:47329` from anothe
 
 For persistent deployment, see [systemd/README.md](systemd/README.md) (Linux) or [launchd/README.md](launchd/README.md) (macOS).
 
+### Start an agent from your terminal
+
+On macOS, `launchd/install.sh` installs `agb` in `~/.local/bin`. It starts the
+agent in Agentboard's tmux session from the current directory and attaches the
+terminal to that window:
+
+```bash
+cd ~/pydantic/ai/base
+agb claude
+
+# Or supply the project path directly
+agb pi ~/projects/example
+```
+
+Run `agb --help` for the full command reference. `agb suspend --all` gracefully
+exits only sessions started through `agb`, writes a bounded final tmux-screen
+snapshot to `~/.agentboard/agb/transcripts`, and prints the associated resume
+commands. Agentboard keeps the durable agent transcript and shows the session
+as Hibernating once its tmux window exits; use Wake in the UI or `agb list` to
+recover its exact resume command after a reboot.
+
 ### From source
 
 Requires **Bun 1.3.14+** (see [Troubleshooting](#troubleshooting)).

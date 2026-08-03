@@ -8,6 +8,7 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 AGENTBOARD_DIR="$HOME/.agentboard"
 BIN_DIR="$AGENTBOARD_DIR/bin"
+LOCAL_BIN_DIR="$HOME/.local/bin"
 
 # Prefer a real bun Mach-O binary. Never pick Socket Firewall package-manager
 # shims ($HOME/.local/share/sfw-shims/bun): they re-exec through `sfw`, can exit
@@ -60,7 +61,7 @@ for var in HOME REPO_DIR BUN_PATH TMUX_PATH; do
     esac
 done
 
-mkdir -p "$LAUNCH_AGENTS" "$BIN_DIR"
+mkdir -p "$LAUNCH_AGENTS" "$BIN_DIR" "$LOCAL_BIN_DIR"
 
 echo "Installing agentboard LaunchAgents with:"
 echo "  Repo:  $REPO_DIR"
@@ -193,6 +194,10 @@ exec /bin/bash "$RECYCLE_SRC" "\$@"
 EOF
 chmod +x "$BIN_DIR/agentboard-memory-recycle.sh"
 
+# Keep this in the same local bin directory as the Agentboard controller so
+# `agb` follows source updates without a second installation step.
+ln -sfn "$REPO_DIR/scripts/agb" "$LOCAL_BIN_DIR/agb"
+
 # Sunday 04:15 local — low agent traffic. No KeepAlive; calendar fire only.
 cat > "$LAUNCH_AGENTS/com.agentboard.memory-recycle.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -230,6 +235,8 @@ done
 echo "Agentboard LaunchAgents installed and loaded."
 echo ""
 echo "Useful commands:"
+echo "  agb claude [path]                                            # Start Claude in tmux"
+echo "  agb suspend --all                                            # Gracefully suspend agb sessions"
 echo "  launchctl list | grep agentboard                              # Status"
 echo "  tail -f ~/.agentboard/agentboard.log                          # Logs"
 echo "  launchctl kickstart -k gui/\$(id -u)/com.agentboard            # Restart"

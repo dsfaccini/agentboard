@@ -28,6 +28,8 @@ Default command: start
 
   recycle  Memory recycle: kickstart LaunchAgent, wait for health, run
            gh-gateway doctor (same as the weekly Sunday 04:15 job).
+
+Interactive tmux sessions: agb --help
 EOF
 }
 

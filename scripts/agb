@@ -1,0 +1,292 @@
+#!/bin/bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  TARGET="$(readlink "$SOURCE")"
+  case "$TARGET" in
+    /*) SOURCE="$TARGET" ;;
+    *) SOURCE="$SCRIPT_DIR/$TARGET" ;;
+  esac
+done
+REPO_DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+TMUX_SESSION_NAME="${TMUX_SESSION:-agentboard}"
+AGENTBOARD_DIR="${AGENTBOARD_DIR:-$HOME/.agentboard}"
+AGENTBOARD_DB_PATH="${AGENTBOARD_DB_PATH:-$AGENTBOARD_DIR/agentboard.db}"
+TRANSCRIPT_DIR="${AGB_TRANSCRIPT_DIR:-$AGENTBOARD_DIR/agb/transcripts}"
+SUSPEND_TIMEOUT_SECONDS="${AGB_SUSPEND_TIMEOUT_SECONDS:-30}"
+MAX_TRANSCRIPT_BYTES=1048576
+
+usage() {
+  cat <<'EOF'
+Usage:
+  agb <claude|codex|pi|grok> [path]
+  agb suspend --all
+  agb list
+
+Start an interactive agent in an Agentboard tmux window. The path defaults to
+the current directory. `agb` attaches this terminal to the new window; detach
+with Ctrl-b d and continue in Agentboard or another tmux client.
+
+Examples:
+  cd ~/pydantic/ai/base && agb claude
+  agb pi ~/projects/example
+  agb suspend --all
+  agb list
+
+Only sessions created with `agb` are suspended. Claude receives `/exit`; Pi
+receives `/quit`. Before asking the agent to exit, `agb` saves its final tmux
+screen to ~/.agentboard/agb/transcripts and prints the exact resume command.
+It never kills an agent that has not exited before the timeout.
+
+After a restart, use Agentboard's Wake action or `agb list` to find the saved
+session and resume command. Codex and Grok can be started, but are deliberately
+not included in graceful suspend until their exit/resume semantics are verified.
+EOF
+}
+
+fail() {
+  echo "agb: $*" >&2
+  exit 2
+}
+
+ensure_agentboard() {
+  if [ "${AGB_SKIP_SERVICE_CHECK:-}" = "1" ]; then
+    return
+  fi
+
+  local port="${PORT:-47329}"
+  if curl --max-time 2 -fsS "http://127.0.0.1:${port}/api/health" >/dev/null 2>&1; then
+    return
+  fi
+
+  "$REPO_DIR/scripts/agentboard-control.sh" start
+}
+
+resolve_path() {
+  local requested_path="$1"
+  if [ ! -d "$requested_path" ]; then
+    fail "path is not a directory: $requested_path"
+  fi
+  (
+    cd "$requested_path"
+    pwd -P
+  )
+}
+
+new_window() {
+  local agent="$1"
+  local project_path="$2"
+  local window_name
+  window_name="$(basename "$project_path")"
+
+  local use_claude_no_flicker=false
+  if [ "$agent" = "claude" ] && [ "${AGENTBOARD_CLAUDE_NO_FLICKER:-true}" != "0" ] && [ "${AGENTBOARD_CLAUDE_NO_FLICKER:-true}" != "false" ]; then
+    use_claude_no_flicker=true
+  fi
+
+  local tmux_window
+  if tmux has-session -t "=$TMUX_SESSION_NAME" 2>/dev/null; then
+    if [ "$use_claude_no_flicker" = true ]; then
+      tmux_window="$(tmux new-window -d -P -F '#{window_id}' -t "=$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path" -e 'CLAUDE_CODE_NO_FLICKER=1' "$agent")"
+    else
+      tmux_window="$(tmux new-window -d -P -F '#{window_id}' -t "=$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path" "$agent")"
+    fi
+  else
+    if [ "$use_claude_no_flicker" = true ]; then
+      tmux_window="$(tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path" -e 'CLAUDE_CODE_NO_FLICKER=1' "$agent")"
+    else
+      tmux_window="$(tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path" "$agent")"
+    fi
+  fi
+
+  tmux set-option -w -t "$tmux_window" @agentboard_agb 1
+  tmux set-option -w -t "$tmux_window" @agentboard_agent "$agent"
+
+  local tmux_target
+  tmux_target="$(tmux display-message -p -t "$tmux_window" '#{session_name}:#{window_index}')"
+  echo "Started $agent in $project_path ($tmux_target)"
+
+  if [ "${AGB_NO_ATTACH:-}" = "1" ]; then
+    return
+  fi
+
+  if [ -n "${TMUX:-}" ]; then
+    exec tmux switch-client -t "$tmux_target"
+  fi
+  exec tmux attach-session -t "$tmux_target"
+}
+
+resume_command() {
+  local agent="$1"
+  local session_id="$2"
+  local log_file_path="$3"
+  case "$agent" in
+    claude|claude-rp)
+      printf 'claude --resume %s' "$session_id"
+      ;;
+    pi)
+      printf 'pi --session %q' "$log_file_path"
+      ;;
+    *)
+      printf 'Agentboard Wake'
+      ;;
+  esac
+}
+
+capture_transcript() {
+  local tmux_window="$1"
+  local session_id="$2"
+  local timestamp="$3"
+
+  mkdir -p "$TRANSCRIPT_DIR"
+  chmod 700 "$TRANSCRIPT_DIR"
+  local snapshot_path="$TRANSCRIPT_DIR/${timestamp}-${session_id}.txt"
+  local temporary_path
+  temporary_path="$(mktemp "$TRANSCRIPT_DIR/.${session_id}.XXXXXX")"
+
+  if ! tmux capture-pane -t "$tmux_window" -p -J -S -5000 > "$temporary_path" 2>/dev/null; then
+    rm -f "$temporary_path"
+    return 1
+  fi
+
+  head -c "$MAX_TRANSCRIPT_BYTES" "$temporary_path" > "$snapshot_path"
+  rm -f "$temporary_path"
+  chmod 600 "$snapshot_path"
+  printf '%s' "$snapshot_path"
+}
+
+window_exists() {
+  tmux display-message -p -t "$1" '#{window_id}' >/dev/null 2>&1
+}
+
+suspend_all() {
+  ensure_agentboard
+
+  if [ ! -f "$AGENTBOARD_DB_PATH" ]; then
+    fail "Agentboard session database not found: $AGENTBOARD_DB_PATH"
+  fi
+
+  local tagged_windows
+  tagged_windows="$(tmux list-windows -t "=$TMUX_SESSION_NAME" -F $'#{window_id}\t#{@agentboard_agb}\t#{@agentboard_agent}' 2>/dev/null || true)"
+  if [ -z "$tagged_windows" ]; then
+    echo "No Agentboard tmux session named $TMUX_SESSION_NAME."
+    return
+  fi
+
+  local timestamp
+  timestamp="$(date '+%Y%m%d-%H%M%S')"
+  local suspended=0
+  local pending=0
+  local skipped=0
+  local tmux_window tag agent
+  while IFS=$'\t' read -r tmux_window tag agent; do
+    [ "$tag" = "1" ] || continue
+
+    local exit_command
+    case "$agent" in
+      claude)
+        exit_command='/exit'
+        ;;
+      pi)
+        exit_command='/quit'
+        ;;
+      *)
+        echo "Skipped $tmux_window ($agent): graceful suspend is not supported."
+        skipped=$((skipped + 1))
+        continue
+        ;;
+    esac
+
+    local session_row
+    session_row="$(sqlite3 -tabs "$AGENTBOARD_DB_PATH" "SELECT session_id, agent_type, project_path, log_file_path FROM agent_sessions WHERE current_window = '$tmux_window' LIMIT 1;" 2>/dev/null || true)"
+    if [ -z "$session_row" ]; then
+      echo "Skipped $tmux_window ($agent): Agentboard has not indexed it yet."
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    local session_id agent_type project_path log_file_path
+    IFS=$'\t' read -r session_id agent_type project_path log_file_path <<< "$session_row"
+    local transcript_path
+    transcript_path="$(capture_transcript "$tmux_window" "$session_id" "$timestamp" || true)"
+    local resume
+    resume="$(resume_command "$agent_type" "$session_id" "$log_file_path")"
+
+    tmux send-keys -t "$tmux_window" -l "$exit_command"
+    tmux send-keys -t "$tmux_window" Enter
+
+    local deadline=$((SECONDS + SUSPEND_TIMEOUT_SECONDS))
+    while window_exists "$tmux_window" && [ "$SECONDS" -lt "$deadline" ]; do
+      sleep 0.2
+    done
+
+    if window_exists "$tmux_window"; then
+      echo "Pending $agent_type session $session_id at $project_path; it is still running."
+      echo "  resume: $resume"
+      [ -z "$transcript_path" ] || echo "  transcript: $transcript_path"
+      pending=$((pending + 1))
+      continue
+    fi
+
+    echo "Suspended $agent_type session $session_id at $project_path"
+    echo "  resume: $resume"
+    [ -z "$transcript_path" ] || echo "  transcript: $transcript_path"
+    suspended=$((suspended + 1))
+  done <<< "$tagged_windows"
+
+  if [ "$suspended" -eq 0 ] && [ "$pending" -eq 0 ] && [ "$skipped" -eq 0 ]; then
+    echo "No sessions created by agb were found."
+  fi
+  if [ "$pending" -gt 0 ]; then
+    echo "Some sessions are still running; no process was killed." >&2
+    return 1
+  fi
+}
+
+list_sessions() {
+  if [ ! -f "$AGENTBOARD_DB_PATH" ]; then
+    fail "Agentboard session database not found: $AGENTBOARD_DB_PATH"
+  fi
+
+  local found=0
+  local session_id agent project_path log_file_path
+  while IFS=$'\t' read -r session_id agent project_path log_file_path; do
+    [ -n "$session_id" ] || continue
+    echo "$agent session $session_id at $project_path"
+    echo "  resume: $(resume_command "$agent" "$session_id" "$log_file_path")"
+    found=1
+  done < <(sqlite3 -tabs "$AGENTBOARD_DB_PATH" "SELECT session_id, agent_type, project_path, log_file_path FROM agent_sessions WHERE current_window IS NULL AND is_pinned = 1 ORDER BY last_activity_at DESC;")
+
+  if [ "$found" -eq 0 ]; then
+    echo "No hibernating Agentboard sessions."
+  fi
+}
+
+case "${1:-}" in
+  claude|codex|pi|grok)
+    [ "$#" -le 2 ] || fail "expected at most one path; run 'agb --help'"
+    ensure_agentboard
+    new_window "$1" "$(resolve_path "${2:-$PWD}")"
+    ;;
+  suspend)
+    [ "${2:-}" = "--all" ] && [ "$#" -eq 2 ] || fail "use 'agb suspend --all'"
+    suspend_all
+    ;;
+  list)
+    [ "$#" -eq 1 ] || fail "use 'agb list'"
+    list_sessions
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  '')
+    usage >&2
+    exit 2
+    ;;
+  *)
+    fail "unknown command '$1'; run 'agb --help'"
+    ;;
+esac

@@ -40,6 +40,12 @@ agentboard restart  # Restart and wait for health
 agentboard recycle  # Memory recycle now (same as weekly job)
 agentboard logs     # Tail app + launchd logs
 
+# Interactive sessions in Agentboard tmux (installed in ~/.local/bin)
+agb claude          # Start from the current directory and attach to tmux
+agb pi ~/work/app   # Start from an explicit directory
+agb suspend --all   # Gracefully suspend only sessions started through agb
+agb list            # Show hibernating sessions and resume commands
+
 # Status
 launchctl list | grep agentboard
 
