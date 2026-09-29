@@ -5105,6 +5105,19 @@ describe('server fetch handlers', () => {
     expect(uploadResponse.ok).toBe(true)
     expect(payload.path.startsWith('/tmp/paste-')).toBe(true)
     expect(payload.path.endsWith('.png')).toBe(true)
+
+    // An oversized declared length is rejected before the body is parsed
+    // (this body isn't multipart, so parsing it would fail with a 500).
+    const oversizedResponse = await fetchHandler.call(
+      server,
+      new Request('http://localhost/api/paste-image', {
+        method: 'POST',
+        headers: { 'content-length': String(20 * 1024 * 1024 + 1) },
+        body: 'not multipart',
+      }),
+      server
+    )
+    expect(oversizedResponse?.status).toBe(413)
   })
 
   test('returns 500 when paste-image upload fails', async () => {

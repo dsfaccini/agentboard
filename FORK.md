@@ -103,7 +103,7 @@ security → perf/safety → features.
 | Upstream change | Verdict / status |
 |---|---|
 | `9eec9db` terminal-output perf | **skipped** — already implemented in our `useTerminal.ts`/`App.tsx` (parallel work). Cherry-picking would conflict for zero gain. |
-| `000f9ad` paste-image allowlist/size-cap | **skipped** — already in our `config.ts`/`index.ts` (parallel work). |
+| `000f9ad` paste-image allowlist/size-cap | **skipped** — allowlist + `file.size` cap already in our `config.ts`/`index.ts` (parallel work). Its early content-length 413 was missing until `/api/paste-image` got one in 2026-09. |
 | `11c458c` shell-quote→1.8.4 (GHSA) | **taken (defensive)** — we removed `concurrently` so we don't pull shell-quote; added `"overrides": { "shell-quote": "^1.8.4" }` as a guard. |
 | `f75202d` agent-aware clipboard image paste (swift NSPasteboard) | **taken** — cherry-picked. Dropped upstream's unused `pasteImageExtensionByMime` map (our `/api/paste-image` uses its own `allowedTypes`); added `pasteImageMaxBytes` to the `indexHandlers.test.ts` mock config. |
 | `9166cd3`→`2683d02`→`33b125b`→`b52bb0f` hibernated/Codex transcript reader | **taken** — cherry-picked as a unit (adds `react-markdown`/`remark-*`, `src/shared/json.ts`, `33b125b` tail-read perf). Dual overlay fix reconciled: our `isolate` (Terminal.tsx className) **and** upstream's `inert` (`container.inert`) both present. |

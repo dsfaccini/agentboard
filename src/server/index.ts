@@ -1806,6 +1806,13 @@ function isImageFilePath(filePath: string): boolean {
 
 // Image upload endpoint for iOS clipboard paste
 app.post('/api/paste-image', async (c) => {
+  // Reject before formData() buffers the whole body. The header is
+  // client-controlled, so file.size below stays the authoritative check.
+  const contentLength = Number(c.req.header('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > configuredPasteImageMaxBytes) {
+    return c.json({ error: 'Image too large' }, 413)
+  }
+
   try {
     const formData = await c.req.formData()
     const file = formData.get('image') as File | null
