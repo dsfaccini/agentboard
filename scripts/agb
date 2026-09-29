@@ -381,7 +381,7 @@ list_sessions() {
     echo "$agent session $session_id at $project_path"
     echo "  resume: $(resume_command "$agent" "$session_id" "$log_file_path")"
     found=1
-  done < <(sqlite3 -tabs "$AGENTBOARD_DB_PATH" "SELECT session_id, agent_type, project_path, log_file_path FROM agent_sessions WHERE current_window IS NULL AND is_pinned = 1 ORDER BY last_activity_at DESC;")
+  done < <(sqlite3 -tabs "$AGENTBOARD_DB_PATH" "SELECT session_id, agent_type, project_path, log_file_path FROM agent_sessions WHERE current_window IS NULL AND is_hibernating = 1 ORDER BY last_activity_at DESC;")
 
   if [ "$found" -eq 0 ]; then
     echo "No hibernating Agentboard sessions."

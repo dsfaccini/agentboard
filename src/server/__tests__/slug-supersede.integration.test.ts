@@ -84,7 +84,7 @@ if (!tmuxAvailable || !localhostBindable) {
         lastActivityAt: new Date().toISOString(),
         lastUserMessage: null,
         currentWindow: defaultWindow,
-        isPinned: false,
+        isHibernating: false,
         lastResumeError: null,
         lastKnownLogSize: null,
         isCodexExec: false,
@@ -299,7 +299,7 @@ if (!tmuxAvailable || !localhostBindable) {
           lastActivityAt: new Date().toISOString(),
           lastUserMessage: null,
           currentWindow: defaultWindow,
-          isPinned: true,
+          isHibernating: true,
           lastResumeError: null,
           lastKnownLogSize: null,
           isCodexExec: false,
@@ -431,7 +431,7 @@ if (!tmuxAvailable || !localhostBindable) {
         // Execution session should have inherited the hibernation marker
         expect(execRecord).not.toBeNull()
         expect(execRecord!.currentWindow).not.toBeNull()
-        expect(execRecord!.isPinned).toBe(true)
+        expect(execRecord!.isHibernating).toBe(true)
 
         // Planning session should be orphaned with the marker cleared.
         const finalDb = initDatabase({ path: dbPath })
@@ -439,7 +439,7 @@ if (!tmuxAvailable || !localhostBindable) {
         finalDb.close()
         expect(planRecord).not.toBeNull()
         expect(planRecord!.currentWindow).toBeNull()
-        expect(planRecord!.isPinned).toBe(false)
+        expect(planRecord!.isHibernating).toBe(false)
       },
       90_000
     )
