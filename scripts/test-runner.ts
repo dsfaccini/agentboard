@@ -23,6 +23,8 @@ const TEST_TMUX_TMPDIR_PREFIXES: readonly string[] = [
 ]
 
 let processCleanupRan = false
+// Private tmux dir handed to every test process (see main()).
+let runTmuxTmpDir: string | null = null
 
 function createTempLogDirs() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentboard-tests-'))
@@ -133,6 +135,19 @@ function cleanupTmuxTestArtifactsOnce(): void {
   }
   processCleanupRan = true
   cleanupTmuxTestArtifacts()
+  removeRunTmuxTmpDir()
+}
+
+function removeRunTmuxTmpDir(): void {
+  if (!runTmuxTmpDir) {
+    return
+  }
+  try {
+    cleanupTmuxTmpDir(runTmuxTmpDir)
+  } catch {
+    // Best-effort teardown backstop.
+  }
+  runTmuxTmpDir = null
 }
 
 async function runCommand(cmd: string[], env: NodeJS.ProcessEnv) {
@@ -164,10 +179,20 @@ process.on('SIGTERM', () => {
 
 async function main() {
   const { tempRoot, claudeDir, codexDir } = createTempLogDirs()
+  // A private tmux dir for every test process. Integration tests pin their
+  // own TMUX_TMPDIR; this one catches any other tmux call that would fall back
+  // to the default socket, i.e. the developer's live server (e.g. an async
+  // startup path finishing after a test restored its Bun.spawnSync mock).
+  // Under /tmp so the socket path stays short, and not an `agentboard-tmux-`
+  // prefix, which the per-file sweep would kill mid-run.
+  runTmuxTmpDir = fs.mkdtempSync(
+    path.join(fs.existsSync('/tmp') ? '/tmp' : os.tmpdir(), 'agentboard-run-')
+  )
   const tempLogFile = path.join(tempRoot, 'agentboard.log')
   const tempDbPath = path.join(tempRoot, 'agentboard.db')
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
+    TMUX_TMPDIR: runTmuxTmpDir,
     // React's act() requires the development build; force NODE_ENV=test
     // so tests pass even when the shell has NODE_ENV=production.
     NODE_ENV: process.env.NODE_ENV === 'production' ? 'test' : (process.env.NODE_ENV || 'test'),
@@ -197,6 +222,8 @@ async function main() {
       .filter(Boolean)
       .join(','),
   }
+  // An inherited $TMUX overrides TMUX_TMPDIR.
+  delete env.TMUX
 
   try {
     cleanupTmuxTestArtifacts()
