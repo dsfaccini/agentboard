@@ -4,7 +4,7 @@ import {
   tmuxSupportsClientFeatures,
 } from './TerminalProxyBase'
 import { TerminalProxyError, TerminalState } from './types'
-import type { SpawnSyncFn } from './types'
+import type { SpawnFn } from './types'
 import { resolveGroupedSessionSwitchTarget } from './groupedSessionTarget'
 import {
   buildTmuxFormat,
@@ -37,8 +37,8 @@ const SET_CLIPBOARD_ENABLED =
 
 // `tmux -V` reports the local binary, which cannot change under a running
 // server, so probe once per spawner instead of on every attach. Keyed by the
-// spawner so tests with a fake spawnSync each get their own probe.
-const clientFeatureSupportBySpawner = new WeakMap<SpawnSyncFn, boolean>()
+// spawner so tests with a fake spawn each get their own probe.
+const clientFeatureSupportBySpawner = new WeakMap<SpawnFn, boolean>()
 
 interface TmuxTargetIdentity {
   sessionName: string
@@ -127,7 +127,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
     }
 
     try {
-      this.runTmuxMutation(['kill-session', '-t', this.options.sessionName])
+      await this.runTmuxMutation(['kill-session', '-t', this.options.sessionName])
       this.logEvent('terminal_session_cleanup', {
         sessionName: this.options.sessionName,
       })
@@ -158,7 +158,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
     })
 
     try {
-      this.runTmuxMutation([
+      await this.runTmuxMutation([
         'new-session',
         '-d',
         '-t',
@@ -167,7 +167,9 @@ class PtyTerminalProxy extends TerminalProxyBase {
         this.options.sessionName,
       ])
     } catch (error) {
-      this.state = TerminalState.DEAD
+      // A timed-out new-session may still have created the session; kill it
+      // so it can't outlive this proxy (pty-leak class).
+      await this.dispose()
       throw new TerminalProxyError(
         'ERR_SESSION_CREATE_FAILED',
         error instanceof Error
@@ -177,25 +179,32 @@ class PtyTerminalProxy extends TerminalProxyBase {
       )
     }
 
+    // A dispose that ran while new-session was in flight may have issued its
+    // kill-session before the session existed; kill it again now that it does.
+    if (attemptId !== this.startAttemptId) {
+      await this.dispose()
+      return
+    }
+
     // Grouped sessions get their own session options from the global default,
     // not from the base session. Copy the base session's mouse setting so
     // SGR mouse sequences from the browser aren't silently dropped.
     let mouseValue = ''
     try {
-      mouseValue = this.runTmux([
+      mouseValue = (await this.runTmux([
         'show-option',
         '-t',
         this.options.baseSession,
         '-v',
         'mouse',
-      ]).trim()
+      ])).trim()
     } catch {
       // Base session may not have an explicit mouse override; ignore
     }
 
     if (mouseValue) {
       try {
-        this.runTmuxMutation([
+        await this.runTmuxMutation([
           'set-option',
           '-t',
           this.options.sessionName,
@@ -213,7 +222,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
     }
 
     try {
-      this.runTmuxMutation([
+      await this.runTmuxMutation([
         'set-option',
         '-t',
         this.options.sessionName,
@@ -236,7 +245,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
     // Opt-out via AGENTBOARD_TMUX_SET_CLIPBOARD=0 to avoid the global change.
     if (SET_CLIPBOARD_ENABLED) {
       try {
-        this.runTmuxMutation(['set-option', '-s', 'set-clipboard', 'on'])
+        await this.runTmuxMutation(['set-option', '-s', 'set-clipboard', 'on'])
       } catch (error) {
         this.logEvent('terminal_set_clipboard_failed', {
           sessionName: this.options.sessionName,
@@ -244,6 +253,8 @@ class PtyTerminalProxy extends TerminalProxyBase {
         })
       }
     }
+
+    const featureArgs = await this.clientFeatureArgs()
 
     if (attemptId !== this.startAttemptId) {
       await this.dispose()
@@ -258,7 +269,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
         [
           'tmux',
           ...withTmuxUtf8Flag([
-            ...this.clientFeatureArgs(),
+            ...featureArgs,
             'attach',
             '-t',
             this.options.sessionName,
@@ -348,7 +359,8 @@ class PtyTerminalProxy extends TerminalProxyBase {
   }
 
   protected async doSwitch(target: string, onReady?: () => void): Promise<boolean> {
-    if (!this.clientTty || this.state === TerminalState.DEAD) {
+    const clientTty = this.clientTty
+    if (!clientTty || this.state === TerminalState.DEAD) {
       throw new TerminalProxyError(
         'ERR_NOT_READY',
         'Terminal client not ready',
@@ -365,14 +377,15 @@ class PtyTerminalProxy extends TerminalProxyBase {
       sessionName: this.options.sessionName,
       tmuxWindow: target,
       effectiveTarget,
-      clientTty: this.clientTty,
+      clientTty,
       mode: this.getMode(),
     })
 
     try {
-      const expectedIdentity = this.readTargetIdentity(effectiveTarget)
-      this.runTmux(['switch-client', '-c', this.clientTty, '-t', effectiveTarget])
+      const expectedIdentity = await this.readTargetIdentity(effectiveTarget)
+      await this.runTmux(['switch-client', '-c', clientTty, '-t', effectiveTarget])
       const actualIdentity = await this.verifyClientTarget(
+        clientTty,
         effectiveTarget,
         expectedIdentity
       )
@@ -382,7 +395,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
         // Ignore resize errors; the PTY may already be closing.
       }
       try {
-        this.runTmux(['refresh-client', '-t', this.clientTty])
+        await this.runTmux(['refresh-client', '-t', clientTty])
       } catch {
         // Ignore refresh failures
       }
@@ -405,20 +418,20 @@ class PtyTerminalProxy extends TerminalProxyBase {
         sessionName: this.options.sessionName,
         tmuxWindow: target,
         effectiveTarget,
-        clientTty: this.clientTty,
+        clientTty,
         durationMs,
         mode: this.getMode(),
       })
-      this.state = TerminalState.READY
+      this.finishSwitch()
       return true
     } catch (error) {
       this.outputSuppressed = false
-      this.state = TerminalState.READY
+      this.finishSwitch()
       this.logEvent('terminal_switch_failure', {
         sessionName: this.options.sessionName,
         tmuxWindow: target,
         effectiveTarget,
-        clientTty: this.clientTty,
+        clientTty,
         error: error instanceof Error ? error.message : 'tmux switch failed',
         mode: this.getMode(),
       })
@@ -430,17 +443,25 @@ class PtyTerminalProxy extends TerminalProxyBase {
     }
   }
 
-  private clientFeatureArgs(): string[] {
+  // A dispose() during the switch's tmux round-trips already marked the proxy
+  // DEAD; don't resurrect it.
+  private finishSwitch(): void {
+    if (this.state === TerminalState.SWITCHING) {
+      this.state = TerminalState.READY
+    }
+  }
+
+  private async clientFeatureArgs(): Promise<string[]> {
     if (!syncFeatureEnabled()) {
       return []
     }
-    const cached = clientFeatureSupportBySpawner.get(this.spawnSync)
+    const cached = clientFeatureSupportBySpawner.get(this.spawn)
     if (cached !== undefined) {
       return cached ? ['-T', 'sync'] : []
     }
     try {
-      const supported = tmuxSupportsClientFeatures(this.runTmux(['-V']))
-      clientFeatureSupportBySpawner.set(this.spawnSync, supported)
+      const supported = tmuxSupportsClientFeatures(await this.runTmux(['-V']))
+      clientFeatureSupportBySpawner.set(this.spawn, supported)
       return supported ? ['-T', 'sync'] : []
     } catch (error) {
       // Attach still proceeds without -T sync; log so a tearing report can be
@@ -453,14 +474,14 @@ class PtyTerminalProxy extends TerminalProxyBase {
     }
   }
 
-  private readTargetIdentity(target: string): TmuxTargetIdentity {
-    const output = this.runParsedTmux([
+  private async readTargetIdentity(target: string): Promise<TmuxTargetIdentity> {
+    const output = (await this.runParsedTmux([
       'display-message',
       '-p',
       '-t',
       target,
       TARGET_IDENTITY_FORMAT,
-    ]).trim()
+    ])).trim()
     const identity = this.parseTargetIdentity(output)
     if (!identity) {
       throw new Error(`Unable to resolve tmux target identity for ${target}`)
@@ -468,15 +489,12 @@ class PtyTerminalProxy extends TerminalProxyBase {
     return identity
   }
 
-  private readClientIdentity(): TmuxTargetIdentity {
-    if (!this.clientTty) {
-      throw new Error('Terminal client not ready')
-    }
+  private async readClientIdentity(clientTty: string): Promise<TmuxTargetIdentity> {
     // display-message -p -c expands formats against the most recently active
     // client's session, not the -c client, so it misreports whenever another
     // tmux client is more recently active. list-clients expands formats per
     // client, so filter by tty instead (same approach as discoverClientTty).
-    const output = this.runParsedTmux([
+    const output = await this.runParsedTmux([
       'list-clients',
       '-F',
       CLIENT_IDENTITY_FORMAT,
@@ -487,14 +505,14 @@ class PtyTerminalProxy extends TerminalProxyBase {
       const parts = splitTmuxFields(cleaned, 3)
       if (!parts) continue
       const [tty, sessionName, windowId] = parts
-      if (tty !== this.clientTty) continue
+      if (tty !== clientTty) continue
       if (!sessionName) break
       return {
         sessionName,
         windowId: windowId?.trim() || null,
       }
     }
-    throw new Error(`Unable to resolve tmux client identity for ${this.clientTty}`)
+    throw new Error(`Unable to resolve tmux client identity for ${clientTty}`)
   }
 
   private parseTargetIdentity(output: string): TmuxTargetIdentity | null {
@@ -519,6 +537,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
   }
 
   private async verifyClientTarget(
+    clientTty: string,
     effectiveTarget: string,
     expected: TmuxTargetIdentity
   ): Promise<TmuxTargetIdentity> {
@@ -529,13 +548,13 @@ class PtyTerminalProxy extends TerminalProxyBase {
       if (delay > 0) {
         await this.wait(delay)
         try {
-          this.runTmux(['switch-client', '-c', this.clientTty!, '-t', effectiveTarget])
+          await this.runTmux(['switch-client', '-c', clientTty, '-t', effectiveTarget])
         } catch {
           // The final identity check below will surface a precise switch failure.
         }
       }
 
-      const actual = this.readClientIdentity()
+      const actual = await this.readClientIdentity(clientTty)
       lastActual = actual
       if (this.identitiesMatch(actual, expected)) {
         return actual
@@ -557,7 +576,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
     while (this.now() - start <= maxWaitMs) {
       let output = ''
       try {
-        output = this.runParsedTmux([
+        output = await this.runParsedTmux([
           'list-clients',
           '-F',
           CLIENT_TTY_FORMAT,

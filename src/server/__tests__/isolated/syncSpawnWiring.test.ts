@@ -61,7 +61,7 @@ describe('sync spawn timing wiring', () => {
     expect(directCalls.filter((c) => c[0] === 'tmux')).toEqual([])
   })
 
-  test('TerminalProxyBase.runTmux records timing via logSlowSyncSpawn', () => {
+  test('TerminalProxyBase.runTmuxSync records timing via logSlowSyncSpawn', () => {
     const spawnSyncCalls: string[][] = []
     class ProbeProxy extends TerminalProxyBase {
       protected async doStart() {}
@@ -79,7 +79,7 @@ describe('sync spawn timing wiring', () => {
         return 'pty' as const
       }
       probe(args: string[]) {
-        return this.runTmux(args)
+        return this.runTmuxSync(args)
       }
     }
     const proxy = new ProbeProxy({

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { PtyTerminalProxy as TerminalProxy } from '../../terminal'
 import { buildTmuxFormat } from '../../tmuxFormat'
+import { fakeCommandProcess, routeTmuxSpawn } from '../fakeTmuxProcess'
 
 const CLIENT_TTY_OUTPUT = `${buildTmuxFormat(['/dev/pts/9', '4242'])}\n`
 const CLIENT_TTY_FORMAT = buildTmuxFormat(['#{client_tty}', '#{client_pid}'])
@@ -20,7 +21,7 @@ function createSpawnHarness({ tmuxVersion = 'tmux 3.4' } = {}) {
     args: string[]
     options: Parameters<typeof Bun.spawn>[1]
   }> = []
-  const spawnSyncCalls: Array<{
+  const tmuxCalls: Array<{
     args: string[]
     options?: Parameters<typeof Bun.spawnSync>[1]
   }> = []
@@ -60,6 +61,11 @@ function createSpawnHarness({ tmuxVersion = 'tmux 3.4' } = {}) {
   }
 
   const spawn = (args: string[], options: Parameters<typeof Bun.spawn>[1]) => {
+    if (!args.includes('attach')) {
+      return fakeCommandProcess(
+        spawnSync(args, options as Parameters<typeof Bun.spawnSync>[1])
+      )
+    }
     spawnCalls.push({ args, options })
     const termOptions = (options?.terminal ?? {}) as Bun.TerminalOptions
     dataHandler =
@@ -79,7 +85,7 @@ function createSpawnHarness({ tmuxVersion = 'tmux 3.4' } = {}) {
   }
 
   const spawnSync = (args: string[], _options?: Parameters<typeof Bun.spawnSync>[1]) => {
-    spawnSyncCalls.push({ args, options: _options })
+    tmuxCalls.push({ args, options: _options })
     const command = getTmuxCommand(args)
     if (command === '-V') {
       return {
@@ -158,7 +164,7 @@ function createSpawnHarness({ tmuxVersion = 'tmux 3.4' } = {}) {
     spawn,
     spawnSync,
     spawnCalls,
-    spawnSyncCalls,
+    tmuxCalls,
     writes,
     resizes,
     terminal,
@@ -194,7 +200,7 @@ describe('TerminalProxy', () => {
 
     await proxy.start()
 
-    expect(harness.spawnSyncCalls).toEqual(
+    expect(harness.tmuxCalls).toEqual(
       expect.arrayContaining([
         {
           args: [
@@ -305,7 +311,7 @@ describe('TerminalProxy', () => {
       const attachEnv = harness.spawnCalls[0]?.options?.env
       expect(attachEnv?.TERM).toBe('xterm-256color')
       expect(attachEnv?.NODE_ENV).toBeUndefined()
-      for (const call of harness.spawnSyncCalls) {
+      for (const call of harness.tmuxCalls) {
         expect(call.options?.env?.NODE_ENV).toBeUndefined()
       }
     } finally {
@@ -332,7 +338,7 @@ describe('TerminalProxy', () => {
       await proxy.start()
     }
 
-    const probes = harness.spawnSyncCalls.filter(
+    const probes = harness.tmuxCalls.filter(
       (call) => getTmuxCommand(call.args) === '-V'
     )
     expect(probes).toHaveLength(1)
@@ -361,11 +367,11 @@ describe('TerminalProxy', () => {
     })
 
     expect(readyCalls).toBe(1)
-    expect(harness.spawnSyncCalls).toContainEqual({
+    expect(harness.tmuxCalls).toContainEqual({
       args: ['tmux', 'switch-client', '-c', '/dev/pts/9', '-t', 'external:@2'],
       options: expect.objectContaining({ timeout: 3000 }),
     })
-    expect(harness.spawnSyncCalls).toContainEqual({
+    expect(harness.tmuxCalls).toContainEqual({
       args: ['tmux', 'refresh-client', '-t', '/dev/pts/9'],
       options: expect.objectContaining({ timeout: 3000 }),
     })
@@ -393,7 +399,7 @@ describe('TerminalProxy', () => {
 
     expect(proxy.getCurrentWindow()).toBe('@2')
     expect(
-      harness.spawnSyncCalls.some(
+      harness.tmuxCalls.some(
         (call) =>
           getTmuxCommand(call.args) === 'display-message' &&
           call.args.includes('-c')
@@ -417,7 +423,7 @@ describe('TerminalProxy', () => {
     proxy.paste('line1\r\nline2\nline3')
 
     // Payload travels via stdin (no argv size limit), CRLF normalized to LF.
-    const loadCall = harness.spawnSyncCalls.find(
+    const loadCall = harness.tmuxCalls.find(
       (call) => getTmuxCommand(call.args) === 'load-buffer'
     )
     expect(loadCall?.args).toEqual([
@@ -433,7 +439,7 @@ describe('TerminalProxy', () => {
 
     // Replayed into the grouped session's active pane; -p defers bracketing to
     // the real pane's mode, -d deletes the staged buffer.
-    expect(harness.spawnSyncCalls).toContainEqual({
+    expect(harness.tmuxCalls).toContainEqual({
       args: [
         'tmux',
         'paste-buffer',
@@ -471,7 +477,7 @@ describe('TerminalProxy', () => {
     // into the external session (bare name — paste-buffer's target-pane
     // parser rejects the =name exact-match form), not the ws session whose
     // active window is its own bootstrap window.
-    expect(harness.spawnSyncCalls).toContainEqual({
+    expect(harness.tmuxCalls).toContainEqual({
       args: [
         'tmux',
         'paste-buffer',
@@ -501,7 +507,7 @@ describe('TerminalProxy', () => {
     await proxy.start()
     await proxy.switchTo('agentboard:@2')
 
-    expect(harness.spawnSyncCalls).toContainEqual({
+    expect(harness.tmuxCalls).toContainEqual({
       args: ['tmux', 'switch-client', '-c', '/dev/pts/9', '-t', 'agentboard-ws-abc:@2'],
       options: expect.objectContaining({ timeout: 3000 }),
     })
@@ -523,7 +529,7 @@ describe('TerminalProxy', () => {
     await proxy.start()
     await proxy.switchTo('agentboard')
 
-    expect(harness.spawnSyncCalls).toContainEqual({
+    expect(harness.tmuxCalls).toContainEqual({
       args: ['tmux', 'switch-client', '-c', '/dev/pts/9', '-t', 'agentboard-ws-abc'],
       options: expect.objectContaining({ timeout: 3000 }),
     })
@@ -531,9 +537,9 @@ describe('TerminalProxy', () => {
   })
 
   test('copies mouse setting from base session to grouped session', async () => {
-    const spawnSyncCalls: string[][] = []
+    const tmuxCalls: string[][] = []
     const spawnSync = (args: string[], _options?: Parameters<typeof Bun.spawnSync>[1]) => {
-      spawnSyncCalls.push(args)
+      tmuxCalls.push(args)
       const command = getTmuxCommand(args)
       if (command === 'list-clients') {
         return {
@@ -562,7 +568,7 @@ describe('TerminalProxy', () => {
       sessionName: 'agentboard-ws-mouse-test',
       baseSession: 'agentboard',
       onData: () => {},
-      spawn: harness.spawn,
+      spawn: routeTmuxSpawn(harness.spawn, spawnSync),
       spawnSync,
       wait: async () => {},
     })
@@ -570,7 +576,7 @@ describe('TerminalProxy', () => {
     await proxy.start()
 
     // Should read mouse from the base session
-    expect(spawnSyncCalls).toContainEqual([
+    expect(tmuxCalls).toContainEqual([
       'tmux',
       'show-option',
       '-t',
@@ -580,7 +586,7 @@ describe('TerminalProxy', () => {
     ])
 
     // Should set mouse on the grouped session
-    expect(spawnSyncCalls).toContainEqual([
+    expect(tmuxCalls).toContainEqual([
       'tmux',
       'set-option',
       '-t',
@@ -591,9 +597,9 @@ describe('TerminalProxy', () => {
   })
 
   test('enables set-clipboard so copies land in a tmux paste buffer', async () => {
-    const spawnSyncCalls: string[][] = []
+    const tmuxCalls: string[][] = []
     const spawnSync = (args: string[], _options?: Parameters<typeof Bun.spawnSync>[1]) => {
-      spawnSyncCalls.push(args)
+      tmuxCalls.push(args)
       const command = getTmuxCommand(args)
       if (command === 'list-clients') {
         return {
@@ -615,7 +621,7 @@ describe('TerminalProxy', () => {
       sessionName: 'agentboard-ws-clipboard-test',
       baseSession: 'agentboard',
       onData: () => {},
-      spawn: harness.spawn,
+      spawn: routeTmuxSpawn(harness.spawn, spawnSync),
       spawnSync,
       wait: async () => {},
     })
@@ -624,7 +630,7 @@ describe('TerminalProxy', () => {
 
     // set-clipboard is a server option; `on` makes tmux store a paste buffer
     // for the clipboard poll instead of only forwarding OSC 52 outward.
-    expect(spawnSyncCalls).toContainEqual([
+    expect(tmuxCalls).toContainEqual([
       'tmux',
       'set-option',
       '-s',
@@ -634,9 +640,9 @@ describe('TerminalProxy', () => {
   })
 
   test('copies mouse=off setting from base session to grouped session', async () => {
-    const spawnSyncCalls: string[][] = []
+    const tmuxCalls: string[][] = []
     const spawnSync = (args: string[], _options?: Parameters<typeof Bun.spawnSync>[1]) => {
-      spawnSyncCalls.push(args)
+      tmuxCalls.push(args)
       const command = getTmuxCommand(args)
       if (command === 'list-clients') {
         return {
@@ -665,14 +671,14 @@ describe('TerminalProxy', () => {
       sessionName: 'agentboard-ws-mouse-off-test',
       baseSession: 'agentboard',
       onData: () => {},
-      spawn: harness.spawn,
+      spawn: routeTmuxSpawn(harness.spawn, spawnSync),
       spawnSync,
       wait: async () => {},
     })
 
     await proxy.start()
 
-    expect(spawnSyncCalls).toContainEqual([
+    expect(tmuxCalls).toContainEqual([
       'tmux',
       'set-option',
       '-t',
@@ -683,9 +689,9 @@ describe('TerminalProxy', () => {
   })
 
   test('does not set grouped mouse option when base mouse setting is empty', async () => {
-    const spawnSyncCalls: string[][] = []
+    const tmuxCalls: string[][] = []
     const spawnSync = (args: string[], _options?: Parameters<typeof Bun.spawnSync>[1]) => {
-      spawnSyncCalls.push(args)
+      tmuxCalls.push(args)
       const command = getTmuxCommand(args)
       if (command === 'list-clients') {
         return {
@@ -714,7 +720,7 @@ describe('TerminalProxy', () => {
       sessionName: 'agentboard-ws-mouse-empty-test',
       baseSession: 'agentboard',
       onData: () => {},
-      spawn: harness.spawn,
+      spawn: routeTmuxSpawn(harness.spawn, spawnSync),
       spawnSync,
       wait: async () => {},
     })
@@ -722,16 +728,16 @@ describe('TerminalProxy', () => {
     await proxy.start()
 
     expect(
-      spawnSyncCalls.some(
+      tmuxCalls.some(
         (call) => getTmuxCommand(call) === 'set-option' && call.includes('mouse')
       )
     ).toBe(false)
   })
 
   test('continues when reading base mouse setting fails', async () => {
-    const spawnSyncCalls: string[][] = []
+    const tmuxCalls: string[][] = []
     const spawnSync = (args: string[], _options?: Parameters<typeof Bun.spawnSync>[1]) => {
-      spawnSyncCalls.push(args)
+      tmuxCalls.push(args)
       const command = getTmuxCommand(args)
       if (command === 'list-clients') {
         return {
@@ -760,7 +766,7 @@ describe('TerminalProxy', () => {
       sessionName: 'agentboard-ws-mouse-fail-test',
       baseSession: 'agentboard',
       onData: () => {},
-      spawn: harness.spawn,
+      spawn: routeTmuxSpawn(harness.spawn, spawnSync),
       spawnSync,
       wait: async () => {},
     })
@@ -768,7 +774,7 @@ describe('TerminalProxy', () => {
     await proxy.start()
 
     expect(
-      spawnSyncCalls.some(
+      tmuxCalls.some(
         (call) => getTmuxCommand(call) === 'set-option' && call.includes('mouse')
       )
     ).toBe(false)
@@ -776,9 +782,9 @@ describe('TerminalProxy', () => {
   })
 
   test('continues when applying grouped mouse setting fails', async () => {
-    const spawnSyncCalls: string[][] = []
+    const tmuxCalls: string[][] = []
     const spawnSync = (args: string[], _options?: Parameters<typeof Bun.spawnSync>[1]) => {
-      spawnSyncCalls.push(args)
+      tmuxCalls.push(args)
       const command = getTmuxCommand(args)
       if (command === 'list-clients') {
         return {
@@ -818,14 +824,14 @@ describe('TerminalProxy', () => {
       sessionName: 'agentboard-ws-mouse-apply-fail-test',
       baseSession: 'agentboard',
       onData: () => {},
-      spawn: harness.spawn,
+      spawn: routeTmuxSpawn(harness.spawn, spawnSync),
       spawnSync,
       wait: async () => {},
     })
 
     await proxy.start()
 
-    expect(spawnSyncCalls).toContainEqual([
+    expect(tmuxCalls).toContainEqual([
       'tmux',
       'show-option',
       '-t',
@@ -833,7 +839,7 @@ describe('TerminalProxy', () => {
       '-v',
       'mouse',
     ])
-    expect(spawnSyncCalls).toContainEqual([
+    expect(tmuxCalls).toContainEqual([
       'tmux',
       'set-option',
       '-t',
@@ -874,7 +880,7 @@ describe('TerminalProxy', () => {
     expect(harness.resizes).toEqual([{ cols: 120, rows: 40 }])
     expect(harness.wasClosed()).toBe(true)
     expect(harness.wasKilled()).toBe(true)
-    expect(harness.spawnSyncCalls).toContainEqual({
+    expect(harness.tmuxCalls).toContainEqual({
       args: ['tmux', 'kill-session', '-t', 'agentboard-ws-abc'],
       options: expect.objectContaining({ timeout: 15000 }),
     })
@@ -898,5 +904,107 @@ describe('TerminalProxy', () => {
     expect(harness.writes).toEqual([
       new TextEncoder().encode('áéíñü-你好-🚀'),
     ])
+  })
+
+  test('dispose during an in-flight new-session kills the session once it exists', async () => {
+    const harness = createSpawnHarness()
+    let releaseNewSession: () => void = () => {}
+    const newSessionDone = new Promise<number>((resolve) => {
+      releaseNewSession = () => resolve(0)
+    })
+    const proxy = new TerminalProxy({
+      connectionId: 'race',
+      sessionName: 'agentboard-ws-race',
+      baseSession: 'agentboard',
+      onData: () => {},
+      spawn: (args, options) => {
+        const proc = harness.spawn(args, options)
+        return getTmuxCommand(args) === 'new-session'
+          ? { ...proc, exited: newSessionDone }
+          : proc
+      },
+      spawnSync: harness.spawnSync,
+      wait: async () => {},
+    })
+
+    const started = proxy.start()
+    await Promise.resolve()
+    // The socket closed while tmux was still creating the grouped session:
+    // this kill-session can reach tmux before the session exists.
+    await proxy.dispose()
+    releaseNewSession()
+    await started
+
+    const kills = harness.tmuxCalls.filter(
+      (call) => getTmuxCommand(call.args) === 'kill-session'
+    )
+    expect(kills).toHaveLength(2)
+    // Bails right after new-session: no option setup, no attach client.
+    expect(
+      harness.tmuxCalls.some((call) => getTmuxCommand(call.args) === 'show-option')
+    ).toBe(false)
+    expect(harness.spawnCalls).toEqual([])
+    expect(proxy.isReady()).toBe(false)
+  })
+
+  test('a failed new-session still kills the grouped session', async () => {
+    const harness = createSpawnHarness()
+    const proxy = new TerminalProxy({
+      connectionId: 'create-fail',
+      sessionName: 'agentboard-ws-create-fail',
+      baseSession: 'agentboard',
+      onData: () => {},
+      spawn: routeTmuxSpawn(harness.spawn, (args, options) => {
+        const result = harness.spawnSync(args, options)
+        // A timed-out client: tmux may still create the session afterwards.
+        return getTmuxCommand(args) === 'new-session'
+          ? { exitCode: null, signalCode: 'SIGTERM' }
+          : result
+      }),
+      spawnSync: harness.spawnSync,
+      wait: async () => {},
+    })
+
+    await expect(proxy.start()).rejects.toMatchObject({
+      code: 'ERR_SESSION_CREATE_FAILED',
+    })
+    expect(harness.tmuxCalls).toContainEqual({
+      args: ['tmux', 'kill-session', '-t', 'agentboard-ws-create-fail'],
+      options: expect.objectContaining({ timeout: 15000 }),
+    })
+    expect(harness.spawnCalls).toEqual([])
+  })
+
+  test('dispose during a switch leaves the proxy dead', async () => {
+    const harness = createSpawnHarness()
+    let releaseRefresh: () => void = () => {}
+    const refreshDone = new Promise<number>((resolve) => {
+      releaseRefresh = () => resolve(0)
+    })
+    const proxy = new TerminalProxy({
+      connectionId: 'switch-dispose',
+      sessionName: 'agentboard-ws-switch-dispose',
+      baseSession: 'agentboard',
+      onData: () => {},
+      spawn: (args, options) => {
+        const proc = harness.spawn(args, options)
+        return getTmuxCommand(args) === 'refresh-client'
+          ? { ...proc, exited: refreshDone }
+          : proc
+      },
+      spawnSync: harness.spawnSync,
+      wait: async () => {},
+    })
+
+    await proxy.start()
+    const switched = proxy.switchTo('agentboard:@2')
+    while (!harness.tmuxCalls.some((call) => getTmuxCommand(call.args) === 'refresh-client')) {
+      await Promise.resolve()
+    }
+    await proxy.dispose()
+    releaseRefresh()
+    await switched
+
+    expect(proxy.isReady()).toBe(false)
   })
 })

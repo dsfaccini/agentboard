@@ -5,6 +5,7 @@ import {
 } from '../terminal/TerminalProxyBase'
 import { TmuxTimeoutError } from '../tmuxTimeout'
 import type { SpawnSyncFn, TerminalProxyOptions } from '../terminal/types'
+import { commandSpawn } from './fakeTmuxProcess'
 
 const okSpawnSync: SpawnSyncFn = () =>
   ({
@@ -35,6 +36,7 @@ function makeOptions(spawnSync: SpawnSyncFn): TerminalProxyOptions {
     sessionName: 'agentboard-ws-conn-1',
     baseSession: 'agentboard',
     onData: () => {},
+    spawn: commandSpawn(spawnSync),
     spawnSync,
     commandTimeoutMs: 1234,
     mutationTimeoutMs: 5678,
@@ -67,8 +69,12 @@ class TestProxy extends TerminalProxyBase {
     return 'pty'
   }
 
-  runTmuxCommand(args: string[]): string {
+  runTmuxCommand(args: string[]): Promise<string> {
     return this.runTmux(args)
+  }
+
+  runTmuxSyncCommand(args: string[]): string {
+    return this.runTmuxSync(args)
   }
 
   deliverPaste(target: string, data: string): void {
@@ -135,20 +141,44 @@ describe('TerminalProxyBase', () => {
     expect(proxy.getCurrentWindow()).toBe('2')
   })
 
-  test('runTmux returns stdout and throws on errors', () => {
+  test('runTmux returns stdout and throws on errors', async () => {
     const okProxy = new TestProxy(makeOptions(okSpawnSync))
-    expect(okProxy.runTmuxCommand(['list-windows'])).toBe('ok')
+    expect(await okProxy.runTmuxCommand(['list-windows'])).toBe('ok')
 
     const errorProxy = new TestProxy(makeOptions(errorSpawnSync))
-    expect(() => errorProxy.runTmuxCommand(['list-windows'])).toThrow('no tmux')
+    await expect(errorProxy.runTmuxCommand(['list-windows'])).rejects.toThrow('no tmux')
   })
 
-  test('runTmux applies a timeout and throws TmuxTimeoutError when tmux hangs', () => {
+  test('runTmux applies a timeout and throws TmuxTimeoutError when tmux hangs', async () => {
     const proxy = new TestProxy(makeOptions(timeoutSpawnSync))
-    expect(() => proxy.runTmuxCommand(['list-windows'])).toThrow(TmuxTimeoutError)
-    expect(() => proxy.runTmuxCommand(['list-windows'])).toThrow(
+    await expect(proxy.runTmuxCommand(['list-windows'])).rejects.toThrow(TmuxTimeoutError)
+    await expect(proxy.runTmuxCommand(['list-windows'])).rejects.toThrow(
       'tmux list-windows timed out after 1234ms'
     )
+  })
+
+  test('runTmux spawns asynchronously with the timeout and never calls spawnSync', async () => {
+    const spawnOptions: Array<Parameters<typeof Bun.spawn>[1]> = []
+    let syncCalls = 0
+    const proxy = new TestProxy({
+      ...makeOptions(() => {
+        syncCalls += 1
+        return okSpawnSync([], undefined)
+      }),
+      spawn: (args, options) => {
+        spawnOptions.push(options)
+        return commandSpawn(okSpawnSync)(args, options)
+      },
+    })
+    expect(await proxy.runTmuxCommand(['list-windows'])).toBe('ok')
+    expect(spawnOptions).toEqual([expect.objectContaining({ timeout: 1234 })])
+    expect(syncCalls).toBe(0)
+  })
+
+  test('runTmuxSync returns stdout and throws TmuxTimeoutError when tmux hangs', () => {
+    expect(new TestProxy(makeOptions(okSpawnSync)).runTmuxSyncCommand(['list-windows'])).toBe('ok')
+    const proxy = new TestProxy(makeOptions(timeoutSpawnSync))
+    expect(() => proxy.runTmuxSyncCommand(['list-windows'])).toThrow(TmuxTimeoutError)
   })
 
   test('deliverPasteViaTmux stages via load-buffer stdin then paste-buffer -p', () => {

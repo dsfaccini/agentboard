@@ -134,7 +134,53 @@ abstract class TerminalProxyBase implements ITerminalProxy {
     this.currentWindow = extractWindowId(target)
   }
 
-  protected runTmux(
+  /**
+   * Run a tmux command without blocking the event loop. Every connection,
+   * attach, switch and close goes through here: under memory pressure a single
+   * tmux spawn can take seconds, and a blocking wait would stall keystrokes,
+   * output and websocket upgrades for every client.
+   */
+  protected async runTmux(
+    args: string[],
+    options: { timeoutMs?: number } = {}
+  ): Promise<string> {
+    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs
+    const proc = this.spawn(['tmux', ...args], {
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: timeoutMs,
+      // Keep leaked launch env (NODE_ENV, npm_*, …) out of any tmux server
+      // daemon this client might boot — see tmuxEnv.ts.
+      env: sanitizedTmuxEnv(),
+    })
+    const [stdout, stderr] = await Promise.all([
+      readStreamText(proc.stdout),
+      readStreamText(proc.stderr),
+      proc.exited,
+    ])
+
+    if (proc.signalCode === 'SIGTERM' || proc.exitCode === null) {
+      throw new TmuxTimeoutError(args.join(' '), timeoutMs)
+    }
+
+    if (proc.exitCode !== 0) {
+      throw new Error(stderr || 'tmux command failed')
+    }
+
+    return stdout
+  }
+
+  protected runTmuxMutation(args: string[]): Promise<string> {
+    return this.runTmux(args, { timeoutMs: this.mutationTimeoutMs })
+  }
+
+  /**
+   * Blocking variant, only for input-ordered paths: a paste (or pipe-pane
+   * keystroke) must reach tmux before the next websocket message is handled,
+   * or a following Enter could overtake it.
+   */
+  protected runTmuxSync(
     args: string[],
     options: { timeoutMs?: number; stdin?: string } = {}
   ): string {
@@ -169,10 +215,6 @@ abstract class TerminalProxyBase implements ITerminalProxy {
     }
 
     return result.stdout?.toString() ?? ''
-  }
-
-  protected runTmuxMutation(args: string[]): string {
-    return this.runTmux(args, { timeoutMs: this.mutationTimeoutMs })
   }
 
   /**
@@ -219,7 +261,7 @@ abstract class TerminalProxyBase implements ITerminalProxy {
     const bufferName = this.nextPasteBufferName()
     const normalized = this.normalizePasteData(data)
     try {
-      this.runTmux(['load-buffer', '-b', bufferName, '-'], { stdin: normalized })
+      this.runTmuxSync(['load-buffer', '-b', bufferName, '-'], { stdin: normalized })
     } catch (error) {
       // The paste is dropped (never fall back to a raw write — that's the
       // auto-submit bug); log so the drop isn't silent.
@@ -227,12 +269,12 @@ abstract class TerminalProxyBase implements ITerminalProxy {
       return
     }
     try {
-      this.runTmux(['paste-buffer', '-d', '-p', '-b', bufferName, '-t', target])
+      this.runTmuxSync(['paste-buffer', '-d', '-p', '-b', bufferName, '-t', target])
     } catch (error) {
       this.logPasteFailure(target, 'paste-buffer', normalized.length, error)
       // paste failed after the buffer was staged; clean it up (best-effort).
       try {
-        this.runTmux(['delete-buffer', '-b', bufferName])
+        this.runTmuxSync(['delete-buffer', '-b', bufferName])
       } catch {
         // ignore
       }
@@ -260,8 +302,15 @@ abstract class TerminalProxyBase implements ITerminalProxy {
   protected runParsedTmux(
     args: string[],
     options: { timeoutMs?: number } = {}
-  ): string {
+  ): Promise<string> {
     return this.runTmux(withTmuxUtf8Flag(args), options)
+  }
+
+  protected runParsedTmuxSync(
+    args: string[],
+    options: { timeoutMs?: number } = {}
+  ): string {
+    return this.runTmuxSync(withTmuxUtf8Flag(args), options)
   }
 
   protected logEvent(event: string, payload: Record<string, unknown> = {}): void {
@@ -295,6 +344,12 @@ abstract class TerminalProxyBase implements ITerminalProxy {
   abstract dispose(): Promise<void>
   abstract getClientTty(): string | null
   abstract getMode(): 'pty' | 'pipe-pane' | 'ssh'
+}
+
+function readStreamText(stream: unknown): Promise<string> {
+  return stream instanceof ReadableStream
+    ? new Response(stream).text()
+    : Promise.resolve('')
 }
 
 function extractWindowId(target: string): string {

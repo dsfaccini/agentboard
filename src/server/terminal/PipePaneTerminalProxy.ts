@@ -78,7 +78,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
 
           if (!hasScrollEvents) {
             // Enter copy-mode once (idempotent, but avoid repeated calls)
-            this.runTmux(['copy-mode', '-t', this.currentTarget])
+            this.runTmuxSync(['copy-mode', '-t', this.currentTarget])
             hasScrollEvents = true
           }
 
@@ -86,7 +86,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
           if (baseButton === 65) {
             hasScrollDown = true
           }
-          this.runTmux(['send-keys', '-X', '-t', this.currentTarget, direction])
+          this.runTmuxSync(['send-keys', '-X', '-t', this.currentTarget, direction])
         }
       }
 
@@ -94,7 +94,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
       // This prevents getting stuck in copy-mode from incidental scroll-down input
       if (hasScrollDown) {
         try {
-          const scrollPos = this.runParsedTmux([
+          const scrollPos = this.runParsedTmuxSync([
             'display-message',
             '-t',
             this.currentTarget,
@@ -102,7 +102,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
             '#{scroll_position}',
           ]).trim()
           if (scrollPos === '0') {
-            this.runTmux(['send-keys', '-X', '-t', this.currentTarget, 'cancel'])
+            this.runTmuxSync(['send-keys', '-X', '-t', this.currentTarget, 'cancel'])
           }
         } catch {
           // Ignore errors checking scroll position
@@ -124,10 +124,10 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
       for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index]
         if (line) {
-          this.runTmux(['send-keys', '-t', this.currentTarget, '-l', '--', line])
+          this.runTmuxSync(['send-keys', '-t', this.currentTarget, '-l', '--', line])
         }
         if (index < lines.length - 1) {
-          this.runTmux(['send-keys', '-t', this.currentTarget, 'Enter'])
+          this.runTmuxSync(['send-keys', '-t', this.currentTarget, 'Enter'])
         }
       }
     } catch {
@@ -299,7 +299,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
 
   private startPipePane(target: string, pipeFile: string): void {
     const command = `cat >> ${pipeFile}`
-    this.runTmux(['pipe-pane', '-t', target, command])
+    this.runTmuxSync(['pipe-pane', '-t', target, command])
   }
 
   private startTail(pipeFile: string): void {
@@ -393,7 +393,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
       }
       let output = ''
       try {
-        output = this.runParsedTmux([
+        output = this.runParsedTmuxSync([
           'list-panes',
           '-t',
           monitorTarget,
@@ -435,7 +435,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
     }
 
     try {
-      this.runTmux(['pipe-pane', '-t', target])
+      this.runTmuxSync(['pipe-pane', '-t', target])
     } catch {
       // Ignore pipe stop failures
     }
@@ -443,7 +443,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
 
   private clearPipePane(target: string): void {
     try {
-      this.runTmux(['pipe-pane', '-t', target])
+      this.runTmuxSync(['pipe-pane', '-t', target])
     } catch {
       // Ignore pipe reset failures
     }
@@ -454,7 +454,7 @@ class PipePaneTerminalProxy extends TerminalProxyBase {
       return
     }
     try {
-      this.runTmux([
+      this.runTmuxSync([
         'resize-pane',
         '-t',
         target,
