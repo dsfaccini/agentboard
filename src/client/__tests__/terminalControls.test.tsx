@@ -118,7 +118,7 @@ describe('TerminalControls', () => {
     expect(selections).toEqual(['session-2'])
   })
 
-  test('paste button routes clipboard text through onPasteText and refocuses', async () => {
+  test('Paste opens a dialog even with clipboard access, then native paste inserts and refocuses', async () => {
     let refocused = false
     const sent: string[] = []
     const pasted: string[] = []
@@ -152,6 +152,10 @@ describe('TerminalControls', () => {
 
     await act(async () => {
       await pasteButton.props.onClick()
+    })
+    expect(renderer.root.findByType('dialog')).toBeDefined()
+    await act(async () => {
+      renderer.root.findByType('textarea').props.onPaste({ preventDefault() {}, clipboardData: { getData: () => 'pasted text', files: [] } })
     })
 
     // Pasted text goes through the explicit paste path (bracketed server-side),
@@ -189,12 +193,17 @@ describe('TerminalControls', () => {
     await act(async () => {
       await pasteButton.props.onClick()
     })
+    expect(renderer.root.findByType('dialog')).toBeDefined()
+    await act(async () => {
+      renderer.root.findByType('textarea').props.onPaste({ preventDefault() {}, clipboardData: { getData: () => 'pasted text', files: [] } })
+    })
 
     expect(sent).toEqual(['pasted text'])
   })
 
-  test('manual paste input sends text on enter', async () => {
+  test('manual paste textarea preserves multiline text', async () => {
     const sent: string[] = []
+    const pasted: string[] = []
 
     globalAny.navigator = {
       vibrate: () => true,
@@ -207,6 +216,7 @@ describe('TerminalControls', () => {
     const renderer = TestRenderer.create(
       <TerminalControls
         onSendKey={(key) => sent.push(key)}
+        onPasteText={(text) => pasted.push(text)}
         sessions={[{ id: 'session-1', name: 'alpha', status: 'working' }]}
         currentSessionId="session-1"
         onSelectSession={() => {}}
@@ -222,20 +232,14 @@ describe('TerminalControls', () => {
       await pasteButton.props.onClick()
     })
 
-    const input = renderer.root.findByType('input')
+    const textarea = renderer.root.findByType('textarea')
 
-    act(() => {
-      input.props.onChange({ target: { value: 'manual' } })
+    await act(async () => {
+      textarea.props.onPaste({ preventDefault() {}, clipboardData: { getData: () => 'line 1\nline 2\n', files: [] } })
     })
 
-    act(() => {
-      input.props.onKeyDown({
-        key: 'Enter',
-        preventDefault: () => {},
-      })
-    })
-
-    expect(sent).toEqual(['manual'])
+    expect(pasted).toEqual(['line 1\nline 2\n'])
+    expect(sent).toEqual([])
   })
 
   test('paste button uploads clipboard image and sends a bracketed path for Claude', async () => {
@@ -273,11 +277,15 @@ describe('TerminalControls', () => {
     await act(async () => {
       await pasteButton.props.onClick()
     })
+    expect(renderer.root.findByType('dialog')).toBeDefined()
+    await act(async () => {
+      renderer.root.findByType('textarea').props.onPaste({ preventDefault() {}, clipboardData: { getData: () => '', files: [new File(['png bytes'], 'image.png', { type: 'image/png' })] } })
+    })
 
     expect(requests).toHaveLength(1)
     expect(requests[0]?.url).toBe('/api/paste-image')
     // Path wrapped in bracketed-paste markers so Claude attaches it ([Image #N]).
-    expect(sent).toEqual(['\x1b[200~/tmp/paste-test.png\x1b[201~'])
+    expect(sent).toEqual(['\x1b[200~/tmp/paste-test.png\x1b[201~ '])
   })
 
   test('paste button sends the raw path for Codex (unchanged native behavior)', async () => {
@@ -312,9 +320,13 @@ describe('TerminalControls', () => {
     await act(async () => {
       await pasteButton.props.onClick()
     })
+    expect(renderer.root.findByType('dialog')).toBeDefined()
+    await act(async () => {
+      renderer.root.findByType('textarea').props.onPaste({ preventDefault() {}, clipboardData: { getData: () => '', files: [new File(['png bytes'], 'image.png', { type: 'image/png' })] } })
+    })
 
     // Codex attaches via its own clipboard path, so the raw path is sent as-is.
-    expect(sent).toEqual(['/tmp/paste-test.png'])
+    expect(sent).toEqual(['/tmp/paste-test.png '])
   })
 
   test('shows the server error when an image upload is rejected', async () => {
@@ -348,11 +360,15 @@ describe('TerminalControls', () => {
     await act(async () => {
       await pasteButton.props.onClick()
     })
+    expect(renderer.root.findByType('dialog')).toBeDefined()
+    await act(async () => {
+      renderer.root.findByType('textarea').props.onPaste({ preventDefault() {}, clipboardData: { getData: () => '', files: [new File(['png bytes'], 'image.png', { type: 'image/png' })] } })
+    })
 
-    // Nothing was pasted, and the paste modal opens showing the failure
+    // Nothing was pasted, and the inline status shows the failure
     expect(sent).toEqual([])
     const alert = renderer.root
-      .findAllByType('p')
+      .findAllByType('span')
       .find((p) => p.props.role === 'alert')
     if (!alert) {
       throw new Error('Expected upload error message')
@@ -360,7 +376,7 @@ describe('TerminalControls', () => {
     expect(alert.props.children).toBe('Image too large')
   })
 
-  test('clears the upload error when the paste modal is cancelled', async () => {
+  test('clears the upload error when dismissed', async () => {
     globalAny.navigator = {
       vibrate: () => true,
       clipboard: clipboardWithImage(),
@@ -389,10 +405,14 @@ describe('TerminalControls', () => {
     await act(async () => {
       await pasteButton.props.onClick()
     })
+    expect(renderer.root.findByType('dialog')).toBeDefined()
+    await act(async () => {
+      renderer.root.findByType('textarea').props.onPaste({ preventDefault() {}, clipboardData: { getData: () => '', files: [new File(['png bytes'], 'image.png', { type: 'image/png' })] } })
+    })
 
     const cancelButton = renderer.root
       .findAllByType('button')
-      .find((button) => button.props.children === 'Cancel')
+      .find((button) => button.props.children === 'Dismiss')
     if (!cancelButton) {
       throw new Error('Expected cancel button')
     }
@@ -402,7 +422,7 @@ describe('TerminalControls', () => {
     })
 
     expect(
-      renderer.root.findAllByType('p').some((p) => p.props.role === 'alert')
+      renderer.root.findAllByType('span').some((p) => p.props.role === 'alert')
     ).toBe(false)
   })
 })

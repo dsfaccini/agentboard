@@ -19,6 +19,9 @@ import { isIOSDevice, getEffectiveModifier, getModifierDisplay } from '../utils/
 import { formatRelativeTime } from '../utils/time'
 import { getPathLeaf } from '../utils/sessionLabel'
 import TerminalControls from './TerminalControls'
+import PasteStatus from './PasteStatus'
+import { useBrowserPaste, type BrowserPaste } from '../hooks/useBrowserPaste'
+import { clipboardFiles } from '../utils/browserFiles'
 import SessionDrawer from './SessionDrawer'
 import SessionPreviewContent from './SessionPreviewContent'
 import { PlusIcon, XCloseIcon, DotsVerticalIcon, Menu01Icon } from '@untitledui-icons/react/line'
@@ -135,6 +138,8 @@ export default function Terminal({
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
   const endSessionButtonRef = useRef<HTMLButtonElement>(null)
+  const pasteFilesRef = useRef<(input: BrowserPaste) => void>(() => {})
+  const pasteErrorRef = useRef<(message: string) => void>(() => {})
   const isRemoteSession = session?.remote === true
   const remoteAllowControl = useSessionStore((s) => s.remoteAllowControl)
   const remoteAllowAttach = useSessionStore((s) => s.remoteAllowAttach)
@@ -173,6 +178,8 @@ export default function Terminal({
     sessionId: session?.id ?? null,
     tmuxTarget: session?.tmuxWindow ?? null,
     agentType: session?.agentType,
+    onPasteFiles: (input) => pasteFilesRef.current(input),
+    onPasteError: (message) => pasteErrorRef.current(message),
     allowAttach: !isReadOnly,
     connectionStatus,
     connectionEpoch,
@@ -1017,6 +1024,15 @@ export default function Terminal({
     [session, isReadOnly, isInputReady, sendMessage, inTmuxCopyModeRef, setTmuxCopyMode]
   )
 
+  const handlePasteImage = useCallback((data: string) => {
+    if (!session || isReadOnly || !isInputReady) return
+    if (inTmuxCopyModeRef.current) {
+      sendMessage({ type: 'tmux-cancel-copy-mode', sessionId: session.id })
+      setTmuxCopyMode(false)
+    }
+    handleSendKey(data)
+  }, [session, isReadOnly, isInputReady, sendMessage, inTmuxCopyModeRef, setTmuxCopyMode, handleSendKey])
+
   const handleRefocus = useCallback(() => {
     const container = containerRef.current
     if (!container) return
@@ -1026,6 +1042,13 @@ export default function Terminal({
       textarea.focus()
     }
   }, [containerRef])
+
+  const browserPaste = useBrowserPaste({ sessionId: session?.id ?? null,
+    disabled: connectionStatus !== 'connected' || isReadOnly || !isInputReady,
+    fileUploadsAllowed: !isRemoteSession, agentType: session?.agentType,
+    onPasteText: handlePasteText, onPasteImage: handlePasteImage, onRefocus: handleRefocus })
+  pasteFilesRef.current = browserPaste.paste
+  pasteErrorRef.current = browserPaste.fail
 
   // Enter text mode: exit copy-mode and focus input (for keyboard button)
   const handleEnterTextMode = useCallback(() => {
@@ -1122,6 +1145,19 @@ export default function Terminal({
     <section
       className={`flex min-w-0 flex-1 flex-col overflow-hidden bg-base terminal-mobile-overlay md:relative md:inset-auto ${isiOS ? 'ios-native-term-selection' : ''}`}
       data-testid="terminal-panel"
+      onDragOver={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes('Files')) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = session && !isReadOnly && isInputReady && !isRemoteSession && connectionStatus === 'connected' ? 'copy' : 'none'
+      }}
+      onDrop={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes('Files')) return
+        event.preventDefault()
+        event.stopPropagation()
+        if (!session || isReadOnly || !isInputReady || isRemoteSession || connectionStatus !== 'connected') return
+        const files = clipboardFiles(event.dataTransfer)
+        if (files.length) void browserPaste.paste({ text: '', files })
+      }}
     >
       {/* Mobile header - always show on mobile for drawer access */}
       <div className={`flex h-10 shrink-0 items-center justify-between border-b border-border bg-elevated px-3 ${session || hibernatingSession ? '' : 'md:hidden'}`}>
@@ -1498,15 +1534,19 @@ export default function Terminal({
 
       </div>
 
+      <PasteStatus {...browserPaste} />
+
       {/* Mobile control strip */}
       {session && (
         <TerminalControls
           onSendKey={handleSendKey}
           onPasteText={handlePasteText}
+          onPasteImage={handlePasteImage}
           disabled={connectionStatus !== 'connected' || isReadOnly || !isInputReady}
           sessions={sessions.map(s => ({ id: s.id, name: s.name, status: s.status }))}
           currentSessionId={session.id}
           agentType={session.agentType}
+          fileUploadsAllowed={!isRemoteSession}
           onSelectSession={onSelectSession}
           hideSessionSwitcher
           onRefocus={handleRefocus}

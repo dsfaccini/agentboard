@@ -345,6 +345,8 @@ function TerminalHarness(props: {
   fontFamily?: string
   useWebGL?: boolean
   onScrollChange?: (isAtBottom: boolean) => void
+  onPasteFiles?: (draft: { text: string; files: File[] }) => void
+  onPasteError?: (message: string) => void
 }) {
   const { containerRef, isTmuxCopyMode } = useTerminal({
     ...props,
@@ -1377,6 +1379,77 @@ describe('useTerminal', () => {
       expect(sum()).toEqual({ drops: 3, bytes: 9 })
     } finally {
       globalThis.fetch = originalFetch
+    }
+  })
+
+  test.each(['MacIntel', 'Win32'])('browser file paste on %s uploads without reading the host clipboard', async (platform) => {
+    globalAny.navigator = { platform, userAgent: 'Chrome', maxTouchPoints: 0 } as Navigator
+    const originalFetch = globalThis.fetch
+    const requests: unknown[] = []
+    globalThis.fetch = (async (url: unknown) => { if (url !== '/api/client-log') requests.push(url); throw new Error('Unexpected host lookup') }) as unknown as typeof fetch
+    const drafts: Array<{text: string; files: File[]}> = []
+    const errors: string[] = []
+    const sent: Array<{ type: string }> = []
+    const {container, dispatchEvent} = createContainerMock()
+    let renderer!: TestRenderer.ReactTestRenderer
+    try {
+      await act(async () => { renderer = TestRenderer.create(
+        <TerminalHarness sessionId="session-1" tmuxTarget="agentboard:@1" theme={{}} fontSize={12}
+          sendMessage={(message) => sent.push(message)} subscribe={() => () => {}}
+          onPasteFiles={(draft) => drafts.push(draft)} onPasteError={message => errors.push(message)} />,
+        {createNodeMock: () => container},
+      ) })
+      const file = new File(['real document bytes'], 'report.docx')
+      act(() => {
+        expect(TerminalMock.instances[0]!.emitKey({key:'v',type:'keydown',metaKey:platform==='MacIntel',ctrlKey:platform!=='MacIntel'})).toBe(platform === 'MacIntel')
+        dispatchEvent('paste', {preventDefault() {}, stopPropagation() {}, clipboardData: {files:[file],getData:()=>'report.docx'}})
+      })
+      await act(async () => { await Promise.resolve() })
+      expect(drafts).toEqual([{text:'',files:[file]}])
+      expect(requests).toEqual([])
+      expect(sent.filter((message) => ['terminal-paste', 'terminal-input'].includes(message.type))).toEqual([])
+      // An opaque remote clipboard must never fall back to the host clipboard.
+      act(() => {
+        TerminalMock.instances[0]!.emitKey({key:'v',type:'keydown',metaKey:platform==='MacIntel',ctrlKey:platform!=='MacIntel'})
+        dispatchEvent('paste', {preventDefault() {}, stopPropagation() {}, clipboardData: {files:[],types:['Files'],getData:()=>'report.docx'}})
+      })
+      await act(async () => { await Promise.resolve() })
+      expect(errors).toEqual(['The browser did not provide file data. Drop the file onto the terminal or choose it to upload.'])
+      expect(requests).toEqual([])
+    } finally {
+      act(() => { renderer?.unmount() })
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('Codex image paste keeps its Ctrl+V signal when browser uploads are enabled', async () => {
+    globalAny.navigator = { platform: 'MacIntel', userAgent: 'Chrome', maxTouchPoints: 0 } as Navigator
+    const originalLocation = globalAny.location
+    globalAny.location = { hostname: 'localhost' } as Location
+    const drafts: Array<{ text: string; files: File[] }> = []
+    const sent: Array<{ type: string; sessionId?: string; data?: string }> = []
+    const { container, dispatchEvent } = createContainerMock()
+    let renderer!: TestRenderer.ReactTestRenderer
+    try {
+      await act(async () => {
+        renderer = TestRenderer.create(
+          <TerminalHarness sessionId="session-1" tmuxTarget="agentboard:@1" agentType="codex" theme={{}} fontSize={12}
+            sendMessage={(message) => sent.push(message)} subscribe={() => () => {}}
+            onPasteFiles={(draft) => drafts.push(draft)} />,
+          { createNodeMock: () => container },
+        )
+      })
+      const image = new File(['png bytes'], 'image.png', { type: 'image/png' })
+      act(() => {
+        TerminalMock.instances[0]!.emitKey({ key: 'v', type: 'keydown', metaKey: true, ctrlKey: false })
+        dispatchEvent('paste', { preventDefault() {}, stopPropagation() {}, clipboardData: { files: [image], getData: () => '' } })
+      })
+      await act(async () => { await Promise.resolve() })
+      expect(drafts).toEqual([])
+      expect(sent).toContainEqual({ type: 'terminal-input', sessionId: 'session-1', data: '\x16' })
+    } finally {
+      act(() => { renderer?.unmount() })
+      globalAny.location = originalLocation
     }
   })
 
