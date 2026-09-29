@@ -78,11 +78,15 @@ export async function shutdownProcess(
 }
 
 export function killTmuxServer(tmuxTmpDir: string): void {
+  // Never rely on createTmuxTmpDir having cleared TMUX earlier: an inherited
+  // $TMUX overrides TMUX_TMPDIR and kill-server would take down the live server.
+  const env: NodeJS.ProcessEnv = { ...process.env, TMUX_TMPDIR: tmuxTmpDir }
+  delete env.TMUX
   try {
     Bun.spawnSync(['tmux', 'kill-server'], {
       stdout: 'ignore',
       stderr: 'ignore',
-      env: { ...process.env, TMUX_TMPDIR: tmuxTmpDir },
+      env,
       // Bound the call so a wedged tmux server can't hang teardown.
       timeout: 5000,
     })

@@ -86,6 +86,9 @@ function cleanupTmuxTmpDir(tmuxTmpDir: string): void {
     ...process.env,
     TMUX_TMPDIR: tmuxTmpDir,
   }
+  // An inherited $TMUX (runner started from a tmux pane) overrides TMUX_TMPDIR
+  // and would point list/kill at the live server, killing every real session.
+  delete env.TMUX
   for (const sessionName of listTmuxSessions(env)) {
     killTmuxSession(sessionName, env)
   }
