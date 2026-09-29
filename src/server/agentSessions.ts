@@ -2,7 +2,7 @@ import path from 'node:path'
 import type { AgentSession } from '../shared/types'
 import { config } from './config'
 import type { AgentSessionRecord } from './db'
-import { getSessionPullRequests } from './prExtractor'
+import { getCachedSessionPullRequests } from './prExtractor'
 
 export function toAgentSession(record: AgentSessionRecord): AgentSession {
   return {
@@ -20,7 +20,7 @@ export function toAgentSession(record: AgentSessionRecord): AgentSession {
       : undefined,
     isHibernating: record.isHibernating,
     lastResumeError: record.lastResumeError ?? undefined,
-    prs: getSessionPullRequests(record.logFilePath, record.lastKnownLogSize),
+    prs: getCachedSessionPullRequests(record.logFilePath, record.lastKnownLogSize),
   }
 }
 

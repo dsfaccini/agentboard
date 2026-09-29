@@ -5772,6 +5772,35 @@ describe('server startup side effects', () => {
     expect(payload.ok).toBe(true)
   })
 
+  test('/api/pr-info rejects an oversized body before parsing it', async () => {
+    const { serveOptions } = await loadIndex()
+    const fetchHandler = serveOptions.fetch
+    if (!fetchHandler) {
+      throw new Error('Fetch handler not configured')
+    }
+
+    const body = JSON.stringify({ urls: ['x'.repeat(17 * 1024)] })
+    const server = {} as Bun.Server<unknown>
+    const response = await fetchHandler.call(
+      server,
+      new Request('http://localhost/api/pr-info', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'content-length': String(body.length),
+        },
+        body,
+      }),
+      server
+    )
+
+    if (!response) {
+      throw new Error('Expected response for pr-info request')
+    }
+
+    expect(response.status).toBe(413)
+  })
+
   test('/api/client-log handles malformed body gracefully', async () => {
     const { serveOptions } = await loadIndex()
     const fetchHandler = serveOptions.fetch

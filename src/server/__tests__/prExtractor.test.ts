@@ -5,7 +5,10 @@ import os from 'node:os'
 import {
   clearPrScanCache,
   extractPullRequests,
+  getCachedSessionPullRequests,
   getSessionPullRequests,
+  setPrScanListener,
+  waitForPrBackgroundScans,
 } from '../prExtractor'
 
 let tempRoot: string
@@ -536,5 +539,65 @@ describe('getSessionPullRequests', () => {
       createLine.slice(cut) + '\n' + claudeToolResult('https://github.com/a/b/pull/8') + '\n'
     )
     expect(getSessionPullRequests(logPath).map((p) => p.number)).toEqual([8])
+  })
+})
+
+describe('getCachedSessionPullRequests', () => {
+  const prLog = (n: number, id = `toolu_${n}`) =>
+    [claudeBashToolUse('gh pr create', id), claudeToolResult(`https://github.com/a/b/pull/${n}`, id)].join('\n') + '\n'
+
+  afterEach(() => setPrScanListener(null))
+
+  test('never scans a cold log inline; the background scan fills the cache', async () => {
+    const logPath = path.join(tempRoot, 's.jsonl')
+    await fs.writeFile(logPath, prLog(5))
+    let notified = 0
+    setPrScanListener(() => notified++)
+
+    expect(getCachedSessionPullRequests(logPath)).toEqual([])
+    await waitForPrBackgroundScans()
+    expect(notified).toBe(1)
+    expect(getCachedSessionPullRequests(logPath).map((p) => p.number)).toEqual([5])
+  })
+
+  test('reads a small append inline and queues a large one', async () => {
+    const logPath = path.join(tempRoot, 's.jsonl')
+    await fs.writeFile(logPath, prLog(1))
+    getCachedSessionPullRequests(logPath)
+    await waitForPrBackgroundScans()
+
+    await fs.appendFile(logPath, prLog(2))
+    expect(getCachedSessionPullRequests(logPath).map((p) => p.number)).toEqual([1, 2])
+
+    const filler = JSON.stringify({ type: 'user', text: 'x'.repeat(1024) }) + '\n'
+    await fs.appendFile(logPath, filler.repeat(400) + prLog(3))
+    let notified = 0
+    setPrScanListener(() => notified++)
+    expect(getCachedSessionPullRequests(logPath).map((p) => p.number)).toEqual([1, 2])
+    await waitForPrBackgroundScans()
+    expect(notified).toBe(1)
+    expect(getCachedSessionPullRequests(logPath).map((p) => p.number)).toEqual([1, 2, 3])
+  })
+
+  test('serves the previous list while a rewrite rescans in the background', async () => {
+    const logPath = path.join(tempRoot, 's.jsonl')
+    await fs.writeFile(logPath, prLog(1) + prLog(2))
+    getCachedSessionPullRequests(logPath)
+    await waitForPrBackgroundScans()
+
+    await fs.writeFile(logPath, prLog(9))
+    expect(getCachedSessionPullRequests(logPath).map((p) => p.number)).toEqual([1, 2])
+    await waitForPrBackgroundScans()
+    expect(getCachedSessionPullRequests(logPath).map((p) => p.number)).toEqual([9])
+  })
+
+  test('does not notify when a background scan finds nothing new', async () => {
+    const logPath = path.join(tempRoot, 's.jsonl')
+    await fs.writeFile(logPath, claudeToolResult('no prs here') + '\n')
+    let notified = 0
+    setPrScanListener(() => notified++)
+    getCachedSessionPullRequests(logPath)
+    await waitForPrBackgroundScans()
+    expect(notified).toBe(0)
   })
 })

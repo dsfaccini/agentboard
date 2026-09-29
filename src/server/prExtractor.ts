@@ -6,6 +6,10 @@
 // with a short line-count fallback window for formats without call ids.
 // Scans incrementally: results are cached per file offset so polling only
 // reads bytes appended since the previous scan.
+// Session hydration (refresh tick, startup) goes through
+// getCachedSessionPullRequests, which never reads a log from the start on
+// the event loop: cold logs, rewrites and large catch-ups scan in the
+// background, one chunk per turn.
 
 import fs from 'node:fs'
 import type { SessionPullRequest } from '../shared/types'
@@ -25,6 +29,10 @@ const READ_CHUNK_BYTES = 4 * 1024 * 1024
 // the dormant-session sweep touches every path each cycle, so once paths >
 // cap, evicted files get fully re-scanned every refresh.
 const MAX_CACHE_ENTRIES = 5000
+// Appended bytes a hydration call may read inline; more goes to the
+// background scan.
+const SYNC_CATCH_UP_BYTES = 256 * 1024
+const BACKGROUND_CHUNK_BYTES = 1024 * 1024
 
 // Separators cover both `gh pr create` shell text and JSON-escaped argv
 // arrays like ["gh","pr","create"] (which appear as gh\",\"pr\",\"create).
@@ -303,6 +311,19 @@ export function extractPullRequests(content: string): SessionPullRequest[] {
  * `knownSize` (e.g. the DB's last_known_log_size) to skip the stat syscall
  * when the caller already knows the size is unchanged.
  */
+function cacheScanState(logPath: string, state: ScanState): void {
+  if (!scanCache.has(logPath) && scanCache.size >= MAX_CACHE_ENTRIES) {
+    // Evict the oldest entry (Map preserves insertion order).
+    const oldest = scanCache.keys().next().value
+    if (oldest) scanCache.delete(oldest)
+  }
+  scanCache.set(logPath, state)
+}
+
+function snapshot(state: ScanState | undefined): SessionPullRequest[] {
+  return state && state.prs.length ? state.prs.slice() : EMPTY_RESULT
+}
+
 export function getSessionPullRequests(
   logPath: string,
   knownSize?: number | null
@@ -314,7 +335,7 @@ export function getSessionPullRequests(
     knownSize != null &&
     knownSize === state.offset
   ) {
-    return state.prs.length ? state.prs.slice() : EMPTY_RESULT
+    return snapshot(state)
   }
 
   let stat: fs.Stats
@@ -333,16 +354,11 @@ export function getSessionPullRequests(
     }
   }
   if (!state) {
-    if (scanCache.size >= MAX_CACHE_ENTRIES) {
-      // Evict the oldest entry (Map preserves insertion order).
-      const oldest = scanCache.keys().next().value
-      if (oldest) scanCache.delete(oldest)
-    }
     state = newScanState()
-    scanCache.set(logPath, state)
+    cacheScanState(logPath, state)
   }
   if (stat.size === state.offset && stat.mtimeMs === state.mtimeMs) {
-    return state.prs.length ? state.prs.slice() : EMPTY_RESULT
+    return snapshot(state)
   }
   if (stat.size === state.offset && stat.mtimeMs !== state.mtimeMs) {
     // Same-size rewrite — rescan from scratch.
@@ -381,10 +397,126 @@ export function getSessionPullRequests(
     }
   }
 
-  return state.prs.length ? state.prs.slice() : EMPTY_RESULT
+  return snapshot(state)
+}
+
+const backgroundQueue = new Set<string>()
+let backgroundRunning = false
+let prScanListener: (() => void) | null = null
+
+/** Called after a background scan changes a log's PR list. */
+export function setPrScanListener(listener: (() => void) | null): void {
+  prScanListener = listener
+}
+
+/**
+ * PRs for session hydration. Returns what the cache holds and reads at most
+ * SYNC_CATCH_UP_BYTES of appended log inline; a cold log, a rewrite or a
+ * larger catch-up is queued for the background scan, and the listener fires
+ * once that scan changes the result.
+ */
+export function getCachedSessionPullRequests(
+  logPath: string,
+  knownSize?: number | null
+): SessionPullRequest[] {
+  const state = scanCache.get(logPath)
+  if (backgroundQueue.has(logPath)) return snapshot(state)
+  if (!state) {
+    queueBackgroundScan(logPath)
+    return EMPTY_RESULT
+  }
+  if (state.offset > 0 && knownSize != null && knownSize === state.offset) {
+    return snapshot(state)
+  }
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(logPath)
+  } catch {
+    return EMPTY_RESULT
+  }
+  const rewritten =
+    stat.size < state.offset ||
+    (stat.size === state.offset && stat.mtimeMs !== state.mtimeMs)
+  if (rewritten || stat.size - state.offset > SYNC_CATCH_UP_BYTES) {
+    queueBackgroundScan(logPath)
+    return snapshot(state)
+  }
+  return getSessionPullRequests(logPath, knownSize)
+}
+
+function queueBackgroundScan(logPath: string): void {
+  backgroundQueue.add(logPath)
+  if (backgroundRunning) return
+  backgroundRunning = true
+  void drainBackgroundQueue()
+}
+
+async function drainBackgroundQueue(): Promise<void> {
+  try {
+    for (const logPath of backgroundQueue) {
+      try {
+        await scanInBackground(logPath)
+      } catch (error) {
+        logger.warn('pr_extract_error', {
+          logPath,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+      backgroundQueue.delete(logPath)
+    }
+  } finally {
+    backgroundRunning = false
+  }
+}
+
+async function scanInBackground(logPath: string): Promise<void> {
+  let stat: fs.Stats
+  try {
+    stat = await fs.promises.stat(logPath)
+  } catch {
+    return
+  }
+  const cached = scanCache.get(logPath)
+  const rescan =
+    !cached ||
+    stat.size < cached.offset ||
+    (stat.size === cached.offset && stat.mtimeMs !== cached.mtimeMs)
+  // A rescan builds a fresh state and swaps it in at the end, so hydration
+  // keeps serving the previous PR list meanwhile.
+  const state = rescan ? newScanState() : cached
+  // A catch-up scan appends to cached.prs in place; copy the URLs first.
+  const before = (cached?.prs ?? EMPTY_RESULT).map((pr) => pr.url)
+  const handle = await fs.promises.open(logPath, 'r')
+  try {
+    while (state.offset < stat.size) {
+      const length = Math.min(BACKGROUND_CHUNK_BYTES, stat.size - state.offset)
+      const buffer = Buffer.alloc(length)
+      const { bytesRead } = await handle.read(buffer, 0, length, state.offset)
+      if (bytesRead <= 0) break
+      processChunk(state, buffer.subarray(0, bytesRead).toString('utf8'))
+      state.offset += bytesRead
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+  } finally {
+    await handle.close()
+  }
+  state.mtimeMs = stat.mtimeMs
+  if (rescan) cacheScanState(logPath, state)
+  const changed =
+    before.length !== state.prs.length ||
+    before.some((url, i) => url !== state.prs[i]?.url)
+  if (changed) prScanListener?.()
 }
 
 /** Test helper: drop cached scan state. */
 export function clearPrScanCache(): void {
   scanCache.clear()
+  backgroundQueue.clear()
+}
+
+/** Test helper: resolves once queued background scans finish. */
+export async function waitForPrBackgroundScans(): Promise<void> {
+  while (backgroundRunning || backgroundQueue.size > 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 1))
+  }
 }

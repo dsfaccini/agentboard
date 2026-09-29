@@ -9,6 +9,9 @@ import type { SessionPullRequest } from '../shared/types'
 
 const CACHE_TTL_MS = 60_000
 const GH_TIMEOUT_MS = 8_000
+// Each lookup spawns `gh`; a row of chips or a reload must not fan out into
+// dozens of concurrent processes.
+const GH_MAX_CONCURRENCY = 4
 
 export interface PrInfo {
   url: string
@@ -39,7 +42,52 @@ export function parsePrUrl(url: string): SessionPullRequest | null {
 const infoCache = new Map<string, { at: number; info: PrInfo }>()
 const checksCache = new Map<string, { at: number; info: PrCheckInfo }>()
 
-async function ghPrView(repo: string, number: number, fields: string) {
+const ghInflight = new Map<string, Promise<Record<string, unknown> | null>>()
+const ghWaiters: Array<() => void> = []
+let ghActive = 0
+
+function acquireGhSlot(): Promise<void> {
+  if (ghActive < GH_MAX_CONCURRENCY) {
+    ghActive++
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => ghWaiters.push(resolve))
+}
+
+function releaseGhSlot(): void {
+  // Hand the slot straight to the next waiter so a new caller cannot slip in
+  // between the release and the waiter's wake-up.
+  const next = ghWaiters.shift()
+  if (next) next()
+  else ghActive--
+}
+
+/** One `gh pr view` per PR and field set at a time; callers share it. */
+function ghPrView(
+  repo: string,
+  number: number,
+  fields: string
+): Promise<Record<string, unknown> | null> {
+  const key = `${repo}#${number}:${fields}`
+  const inflight = ghInflight.get(key)
+  if (inflight) return inflight
+  const request = (async () => {
+    await acquireGhSlot()
+    try {
+      return await runGhPrView(repo, number, fields)
+    } catch {
+      // Bun.spawn throws when gh is missing.
+      return null
+    } finally {
+      releaseGhSlot()
+    }
+  })()
+  ghInflight.set(key, request)
+  void request.finally(() => ghInflight.delete(key))
+  return request
+}
+
+async function runGhPrView(repo: string, number: number, fields: string) {
   const proc = Bun.spawn(
     ['gh', 'pr', 'view', String(number), '--repo', repo, '--json', fields],
     { stdout: 'pipe', stderr: 'pipe' }

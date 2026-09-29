@@ -213,6 +213,52 @@ describe('PrChips hover card', () => {
     act(() => renderer.unmount())
   })
 
+  test('check results expire after the TTL and errors are never cached', async () => {
+    const pr = { url: 'https://github.com/o/r/pull/77', repo: 'o/r', number: 77 }
+    let checksCalls = 0
+    let fail = true
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url.startsWith('/api/pr-checks')) {
+        checksCalls++
+        return new Response(
+          JSON.stringify(
+            fail
+              ? { url: pr.url, error: 'unavailable' }
+              : { url: pr.url, state: 'OPEN', checks: [] }
+          )
+        )
+      }
+      return new Response(JSON.stringify([]))
+    }) as unknown as typeof fetch
+    const hover = async () => {
+      let renderer!: TestRenderer.ReactTestRenderer
+      act(() => {
+        renderer = TestRenderer.create(<PrChips prs={[pr]} />, { createNodeMock })
+      })
+      act(() => openCard(renderer.root))
+      await act(async () => {})
+      act(() => renderer.unmount())
+    }
+
+    await hover()
+    expect(checksCalls).toBe(1)
+    fail = false
+    await hover()
+    expect(checksCalls).toBe(2)
+    await hover()
+    expect(checksCalls).toBe(2)
+
+    const realNow = Date.now
+    Date.now = () => realNow() + 61_000
+    try {
+      await hover()
+      expect(checksCalls).toBe(3)
+    } finally {
+      Date.now = realNow
+    }
+  })
+
   test('header, title, and check rows link out', async () => {
     let renderer!: TestRenderer.ReactTestRenderer
     act(() => {
@@ -358,6 +404,28 @@ describe('PrChips single-row fit', () => {
     })
     expect(chipLinks(renderer.root).length).toBe(3)
     expect(overflowText(renderer.root)).toBe('+2')
+    act(() => renderer.unmount())
+  })
+
+  test('re-measures only when the PR URLs change, not on a new array', () => {
+    containerWidth = 1000
+    let measures = 0
+    globalAny.getComputedStyle = () => {
+      measures++
+      return { paddingLeft: `${PADDING_LEFT}px`, paddingRight: '0px', columnGap: '4px' }
+    }
+    let renderer!: TestRenderer.ReactTestRenderer
+    act(() => {
+      renderer = TestRenderer.create(<PrChips prs={makePrs(3)} />, {
+        createNodeMock: fitNodeMock,
+      })
+    })
+    const afterMount = measures
+    // Every session broadcast rebuilds the array with the same URLs.
+    act(() => renderer.update(<PrChips prs={makePrs(3)} />))
+    expect(measures).toBe(afterMount)
+    act(() => renderer.update(<PrChips prs={makePrs(4)} />))
+    expect(measures).toBeGreaterThan(afterMount)
     act(() => renderer.unmount())
   })
 

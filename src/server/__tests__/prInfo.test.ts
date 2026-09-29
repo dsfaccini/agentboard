@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { fetchPrInfo, mapCheck, parsePrUrl } from '../prInfo'
+import { fetchPrChecks, fetchPrInfo, mapCheck, parsePrUrl } from '../prInfo'
 
 describe('parsePrUrl', () => {
   test('parses github PR urls', () => {
@@ -77,6 +77,57 @@ describe('mapCheck', () => {
         conclusion: null,
         link: undefined,
       })
+    }
+  })
+})
+
+describe('gh pr view spawning', () => {
+  test('dedupes in-flight lookups and runs at most 4 gh processes at once', async () => {
+    const bun = Bun as unknown as { spawn: typeof Bun.spawn }
+    const originalSpawn = bun.spawn
+    const finishers: Array<() => void> = []
+    const spawned: string[][] = []
+    let running = 0
+    let peak = 0
+    bun.spawn = ((args: string[]) => {
+      spawned.push(args)
+      running++
+      peak = Math.max(peak, running)
+      let finish!: () => void
+      const exited = new Promise<number>((resolve) => {
+        finish = () => {
+          running--
+          resolve(0)
+        }
+      })
+      finishers.push(finish)
+      return {
+        stdout: JSON.stringify({ state: 'OPEN', title: 't', isDraft: false }),
+        exited,
+        kill: () => {},
+      }
+    }) as unknown as typeof Bun.spawn
+    try {
+      const urls = Array.from(
+        { length: 10 },
+        (_, i) => `https://github.com/dedupe/r/pull/${i + 1}`
+      )
+      const first = fetchPrInfo(urls)
+      const second = fetchPrInfo(urls.slice(0, 5))
+      const checks = fetchPrChecks(urls[0]!)
+      // Let queued lookups start as slots free up.
+      while (spawned.length < 11 || running > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1))
+        finishers.splice(0).forEach((finish) => finish())
+      }
+      const [a, b] = await Promise.all([first, second, checks])
+      expect(a).toHaveLength(10)
+      expect(b).toHaveLength(5)
+      // 10 info lookups shared by both batches + 1 checks lookup.
+      expect(spawned).toHaveLength(11)
+      expect(peak).toBeLessThanOrEqual(4)
+    } finally {
+      bun.spawn = originalSpawn
     }
   })
 })

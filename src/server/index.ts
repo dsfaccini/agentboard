@@ -18,7 +18,7 @@ import {
 } from './db'
 import { LogPoller } from './logPoller'
 import { toAgentSession } from './agentSessions'
-import { getSessionPullRequests } from './prExtractor'
+import { getCachedSessionPullRequests, setPrScanListener } from './prExtractor'
 import { fetchPrChecks, fetchPrInfo, parsePrUrl } from './prInfo'
 import { getLogSearchDirs } from './logDiscovery'
 import {
@@ -839,6 +839,18 @@ function updateActiveAgentSessions() {
   )
 }
 
+// Background PR scans finish after the hydration that queued them. Window
+// sessions pick the result up on the next refresh tick; dormant lists are
+// event-driven, so republish them once a burst of scans settles.
+let prRepublishTimer: ReturnType<typeof setTimeout> | null = null
+setPrScanListener(() => {
+  if (prRepublishTimer) return
+  prRepublishTimer = setTimeout(() => {
+    prRepublishTimer = null
+    updateDormantAgentSessions()
+  }, 500)
+})
+
 function updateDormantAgentSessions() {
   const hibernating = filterExcludedAgentSessions(
     db.getHibernatingSessions().map(toAgentSession)
@@ -1090,7 +1102,7 @@ export function hydrateSessionsWithAgentSessions(
       agentSessionName: agentSession.displayName,
       logFilePath: agentSession.logFilePath,
       lastUserMessage: agentSession.lastUserMessage ?? session.lastUserMessage,
-      prs: getSessionPullRequests(
+      prs: getCachedSessionPullRequests(
         agentSession.logFilePath,
         agentSession.lastKnownLogSize
       ),
@@ -1459,7 +1471,13 @@ app.get('/api/memory', async (c) => {
 app.get('/api/sessions', (c) => c.json(registry.getAll()))
 
 // Eager tier for PR chips: state/title/author, batched + 60s cached.
+// 50 URLs fit well inside the cap.
+const PR_INFO_MAX_BODY_BYTES = 16 * 1024
 app.post('/api/pr-info', async (c) => {
+  const contentLength = Number(c.req.header('content-length') ?? 0)
+  if (Number.isFinite(contentLength) && contentLength > PR_INFO_MAX_BODY_BYTES) {
+    return c.json({ error: 'Payload too large' }, 413)
+  }
   const body = (await c.req.json().catch(() => null)) as {
     urls?: unknown
   } | null

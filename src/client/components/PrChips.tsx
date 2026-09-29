@@ -31,15 +31,33 @@ interface PrCheckInfo extends PrInfo {
 // fetched once per 60s (server also caches) no matter how often rows remount.
 // Error results are never cached — a transient failure would otherwise pin
 // the chip to its gray fallback for the life of the page (days in a PWA).
+// CI checks change far more often than PR state, so a hover after the TTL
+// refetches them.
 const INFO_TTL_MS = 60_000
+const CHECKS_TTL_MS = 60_000
 const infoCache = new Map<string, { at: number; info: PrInfo }>()
-const checksCache = new Map<string, PrCheckInfo>()
+const checksCache = new Map<string, { at: number; info: PrCheckInfo }>()
 const infoInflight = new Map<string, Promise<unknown>>()
 const checksInflight = new Set<string>()
 
 function cachedInfo(url: string): PrInfo | undefined {
   const c = infoCache.get(url)
   return c && Date.now() - c.at < INFO_TTL_MS ? c.info : undefined
+}
+
+function cachedChecks(url: string): PrCheckInfo | undefined {
+  const c = checksCache.get(url)
+  return c && Date.now() - c.at < CHECKS_TTL_MS ? c.info : undefined
+}
+
+// Session broadcasts deliver a new prs array on every update. Keep the
+// previous array while its URLs are unchanged so the fit pass below does
+// not re-measure (forced layout) on every broadcast.
+function useStablePrs(prs: SessionPullRequest[]): SessionPullRequest[] {
+  const key = prs.map((pr) => pr.url).join('\n')
+  const stable = useRef({ key, prs })
+  if (stable.current.key !== key) stable.current = { key, prs }
+  return stable.current.prs
 }
 
 // Pill geometry shared by PrChip anchors and the offscreen measurer spans
@@ -259,7 +277,7 @@ function PrChip({
 }) {
   const [info, setInfo] = useState<PrInfo | undefined>(cachedInfo(pr.url))
   const [checks, setChecks] = useState<PrCheckInfo | undefined>(
-    checksCache.get(pr.url)
+    cachedChecks(pr.url)
   )
   const anchorRef = useRef<HTMLSpanElement>(null)
   const { open, pos, scheduleOpen, scheduleClose, cancelClose, cardRef } =
@@ -290,12 +308,14 @@ function PrChip({
 
   // Lazy: CI detail only on hover.
   useEffect(() => {
-    if (!open || checksCache.has(pr.url) || checksInflight.has(pr.url)) return
+    if (!open || cachedChecks(pr.url) || checksInflight.has(pr.url)) return
     checksInflight.add(pr.url)
     fetch(`/api/pr-checks?url=${encodeURIComponent(pr.url)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((c: PrCheckInfo | null) => {
-        if (c) checksCache.set(pr.url, c)
+        // Like info, an error result is shown but never cached, so the next
+        // hover retries.
+        if (c && !c.error) checksCache.set(pr.url, { at: Date.now(), info: c })
         if (mounted.current && c) setChecks(c)
       })
       .catch(() => {})
@@ -496,7 +516,8 @@ function OverflowChip({ prs }: { prs: SessionPullRequest[] }) {
 // width allows and collapses the rest into OverflowChip. The measurer is
 // absolute + invisible — measurable but out of flow — and clipped by the
 // container's overflow-hidden.
-export function PrChips({ prs }: { prs: SessionPullRequest[] }) {
+export function PrChips({ prs: incomingPrs }: { prs: SessionPullRequest[] }) {
+  const prs = useStablePrs(incomingPrs)
   const containerRef = useRef<HTMLDivElement>(null)
   const chipEls = useRef<(HTMLSpanElement | null)[]>([])
   const plusRef = useRef<HTMLSpanElement>(null)
