@@ -1,15 +1,19 @@
 import { spawnSync } from 'node:child_process'
+import { existsSync, rmSync } from 'node:fs'
+import { privateTmuxSocket } from './privateTmux'
 
+// The suite ran on a private tmux server (see playwright.config.ts), so
+// cleanup is one kill-server by explicit socket plus removing the directory.
+// Without a private dir there is nothing of ours to clean, and teardown never
+// touches a shared server.
 export default async function teardown() {
-  const session = process.env.E2E_TMUX_SESSION
-  if (!session) {
+  const dir = process.env.E2E_TMUX_TMPDIR
+  if (!dir) {
     return
   }
-
-  const check = spawnSync('tmux', ['-V'], { stdio: 'ignore' })
-  if (check.status !== 0) {
-    return
+  const socket = privateTmuxSocket()
+  if (existsSync(socket)) {
+    spawnSync('tmux', ['-S', socket, 'kill-server'], { stdio: 'ignore' })
   }
-
-  spawnSync('tmux', ['kill-session', '-t', session], { stdio: 'ignore' })
+  rmSync(dir, { recursive: true, force: true })
 }

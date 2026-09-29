@@ -6,12 +6,15 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { test, expect } from '@playwright/test'
+import { privateTmuxSocket } from './privateTmux'
 
 const WINDOW_NAME = 'paste-repl'
 const REPL_PATH = fileURLToPath(new URL('./fixtures/paste-repl.py', import.meta.url))
 
 function tmux(args: string[]): { status: number | null; stdout: string } {
-  const result = spawnSync('tmux', args, { encoding: 'utf-8' })
+  const result = spawnSync('tmux', ['-S', privateTmuxSocket(), ...args], {
+    encoding: 'utf-8',
+  })
   return { status: result.status, stdout: result.stdout ?? '' }
 }
 
