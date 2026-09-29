@@ -22,6 +22,7 @@ MAX_TRANSCRIPT_BYTES=1048576
 usage() {
   cat <<'EOF'
 Usage:
+  agb
   agb <claude|codex|pi|grok> [path] [options] [-- agent arguments]
   agb suspend --all
   agb list
@@ -30,7 +31,11 @@ Start an interactive agent in an Agentboard tmux window. The path defaults to
 the current directory. `agb` attaches this terminal to the new window; detach
 with Ctrl-b d and continue in Agentboard or another tmux client.
 
+With no arguments, `agb` opens a plain shell window in the current directory
+instead of an agent.
+
 Examples:
+  agb
   cd ~/pydantic/ai/base && agb claude
   agb claude ~/projects/example --session experiments
   agb claude --window investigate -- --model opus
@@ -134,6 +139,29 @@ new_window() {
   if [ "$no_attach" = true ]; then
     return
   fi
+
+  if [ -n "${TMUX:-}" ]; then
+    exec tmux switch-client -t "$tmux_target"
+  fi
+  exec tmux attach-session -t "$tmux_target"
+}
+
+new_shell_window() {
+  local project_path
+  project_path="$(resolve_path "$PWD")"
+  local window_name
+  window_name="$(basename "$project_path")"
+
+  local tmux_window
+  if tmux has-session -t "=$TMUX_SESSION_NAME" 2>/dev/null; then
+    tmux_window="$(tmux new-window -d -P -F '#{window_id}' -t "=$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path")"
+  else
+    tmux_window="$(tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION_NAME" -n "$window_name" -c "$project_path")"
+  fi
+
+  local tmux_target
+  tmux_target="$(tmux display-message -p -t "$tmux_window" '#{session_name}:#{window_index}')"
+  echo "Started a shell in $project_path ($tmux_target)"
 
   if [ -n "${TMUX:-}" ]; then
     exec tmux switch-client -t "$tmux_target"
@@ -404,8 +432,7 @@ case "${1:-}" in
     usage
     ;;
   '')
-    usage >&2
-    exit 2
+    new_shell_window
     ;;
   *)
     fail "unknown command '$1'; run 'agb --help'"
