@@ -1,6 +1,6 @@
 // Stuck-shell reaper (fork-only) — see FORK.md watch-list.
 //
-// `tmux new-session -t <group>` (PtyTerminalProxy.doStart on every websocket,
+// `tmux new-session -t <group>` (PtyTerminalProxy.doStart on a socket's first attach,
 // SessionManager's group recovery) spawns a throwaway default-shell window and
 // destroys it once the session joins the group. tmux closes the pty master but
 // never signals the child. When that happens before the shell has taken its

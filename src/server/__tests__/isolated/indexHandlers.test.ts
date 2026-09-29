@@ -4686,8 +4686,47 @@ describe('server message handlers', () => {
     expect(dbState.records.get(hibernatingId)?.isPinned).toBe(true)
   })
 
+  test('websocket open creates no terminal proxy until the first attach', async () => {
+    const { serveOptions, registryInstance } = await loadIndex()
+    registryInstance.sessions = [baseSession]
+    const websocket = serveOptions.websocket
+    if (!websocket) {
+      throw new Error('WebSocket handlers not configured')
+    }
+
+    // An abandoned socket (opened, never attached) costs no tmux work.
+    const abandoned = createWs()
+    websocket.open?.(abandoned.ws as never)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(abandoned.ws.data.terminal).toBe(null)
+    expect(TerminalProxyMock.instances).toHaveLength(0)
+    websocket.close?.(abandoned.ws as never, 1000, 'test')
+
+    const { ws, sent } = createWs()
+    websocket.open?.(ws as never)
+    websocket.message?.(
+      ws as never,
+      JSON.stringify({
+        type: 'terminal-attach',
+        sessionId: baseSession.id,
+        tmuxTarget: baseSession.tmuxWindow,
+      })
+    )
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(TerminalProxyMock.instances).toHaveLength(1)
+    expect(ws.data.terminal?.starts).toBe(1)
+    expect(
+      sent.some(
+        (message) => message.type === 'terminal-ready' && message.sessionId === baseSession.id
+      )
+    ).toBe(true)
+  })
+
   test('websocket close disposes all terminals', async () => {
-    const { serveOptions } = await loadIndex()
+    const { serveOptions, registryInstance } = await loadIndex()
+    registryInstance.sessions = [baseSession]
     const websocket = serveOptions.websocket
     if (!websocket) {
       throw new Error('WebSocket handlers not configured')
@@ -4695,6 +4734,14 @@ describe('server message handlers', () => {
 
     const { ws } = createWs()
     websocket.open?.(ws as never)
+    websocket.message?.(
+      ws as never,
+      JSON.stringify({
+        type: 'terminal-attach',
+        sessionId: baseSession.id,
+        tmuxTarget: baseSession.tmuxWindow,
+      })
+    )
 
     const terminal = ws.data.terminal
     if (!terminal) {

@@ -2097,7 +2097,6 @@ const websocketHandlers = {
       hibernating: agentSessions.hibernating,
       history: agentSessions.history,
     })
-    initializePersistentTerminal(ws)
   },
   message(ws: ServerWebSocket<WSData>, message: string | BufferSource) {
     handleMessage(ws, message)
@@ -3995,21 +3994,9 @@ function handleSessionWake(
   }
 }
 
-function initializePersistentTerminal(ws: ServerWebSocket<WSData>) {
-  if (ws.data.terminal) {
-    return
-  }
-
-  const terminal = createPersistentTerminal(ws)
-  ws.data.terminal = terminal
-
-  void terminal.start().catch((error) => {
-    ws.data.terminal = null
-    clearAttachDedup(ws)
-    handleTerminalError(ws, null, error, 'ERR_TMUX_ATTACH_FAILED')
-  })
-}
-
+// The proxy (grouped session + tmux client) is created on the socket's first
+// terminal-attach, not on open: a socket the client abandons before attaching
+// costs no tmux work and runs no `new-session -t` (see FORK.md stuck shells).
 function createPersistentTerminal(ws: ServerWebSocket<WSData>) {
   const sessionName = `${config.tmuxSession}-ws-${ws.data.connectionId}`
 
