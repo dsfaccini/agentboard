@@ -4191,6 +4191,40 @@ describe('server message handlers', () => {
     })
   })
 
+  test('wakes session launched with an env prefix, keeping the prefix', async () => {
+    const { serveOptions } = await loadIndex()
+    const { ws } = createWs()
+    const websocket = serveOptions.websocket
+    if (!websocket) {
+      throw new Error('WebSocket handlers not configured')
+    }
+    websocket.open?.(ws as never)
+
+    // scripts/agb stores Claude launches in this shape.
+    const record = makeRecord({
+      sessionId: 'resume-env',
+      displayName: 'env-session',
+      projectPath: '/tmp/env',
+      agentType: 'claude',
+      currentWindow: null,
+      launchCommand: 'env CLAUDE_CODE_NO_FLICKER=1 claude --model opus',
+    })
+    seedRecord(record)
+
+    let createdCommand: string | undefined
+    sessionManagerState.createWindow = (_projectPath, _name, command) => {
+      createdCommand = command
+      return { ...baseSession, id: 'created-env', name: 'env-session', tmuxWindow: 'agentboard:51' }
+    }
+
+    websocket.message?.(
+      ws as never,
+      JSON.stringify({ type: 'session-wake', sessionId: 'resume-env' })
+    )
+
+    expect(createdCommand).toBe('env CLAUDE_CODE_NO_FLICKER=1 claude --model opus --resume resume-env')
+  })
+
   test('wakes codex session with quoted launch_command preserving flags', async () => {
     const { serveOptions } = await loadIndex()
     const { ws } = createWs()

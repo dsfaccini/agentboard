@@ -3381,9 +3381,15 @@ function buildResumeCommand(
 
   // Extract flags from the stored command: strip the executable (first token)
   // and any existing resume subcommand/flag + its session ID argument.
-  // Normalize first to handle tmux quoting and bash -lc wrappers.
+  // Normalize first to handle tmux quoting and bash -lc wrappers. A leading
+  // environment prefix (`env FOO=1 claude …`, as scripts/agb stores it) is kept
+  // in front of the resume command rather than mistaken for the executable.
   const resumableArg = /(?:"[^"]*"|'[^']*'|\S+)/
-  const flags = normalizePaneStartCommand(record.launchCommand)
+  const normalized = normalizePaneStartCommand(record.launchCommand)
+  const envPrefix =
+    /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/.exec(normalized)?.[0] ?? ''
+  const flags = normalized
+    .slice(envPrefix.length)
     .replace(/^\S+\s*/, '')             // strip executable
     .replace(new RegExp(`--resume(?:\\s+|=)${resumableArg.source}`, 'g'), '') // strip --resume <id> / --resume=<id> (Claude)
     .replace(new RegExp(`\\bresume\\s+${resumableArg.source}`, 'g'), '') // strip resume <id> (Codex subcommand)
@@ -3392,17 +3398,17 @@ function buildResumeCommand(
     .trim()
 
   if (!flags) {
-    return baseResumeCmd
+    return `${envPrefix}${baseResumeCmd}`
   }
 
   // Inject flags after the executable in the resume command
   const firstSpace = baseResumeCmd.indexOf(' ')
   if (firstSpace === -1) {
-    return `${baseResumeCmd} ${flags}`
+    return `${envPrefix}${baseResumeCmd} ${flags}`
   }
   const exe = baseResumeCmd.slice(0, firstSpace)
   const rest = baseResumeCmd.slice(firstSpace + 1)
-  return `${exe} ${flags} ${rest}`
+  return `${envPrefix}${exe} ${flags} ${rest}`
 }
 
 function validateWakeTemplate(record: AgentSessionRecord): WakeError | null {
