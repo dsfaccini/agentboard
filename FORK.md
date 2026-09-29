@@ -54,7 +54,9 @@ security → perf/safety → features.
   bind (`AGENTBOARD_BIND_TAILSCALE`), auth token (`AGENTBOARD_AUTH_TOKEN`), WS max
   payload (`AGENTBOARD_WS_MAX_PAYLOAD_BYTES`), client-log cap
   (`AGENTBOARD_CLIENT_LOG_MAX_BYTES`), paste-image MIME allowlist + size cap,
-  event-name/payload `413` guards.
+  event-name/payload `413` guards, `/api/pr-info` content-length `413` (16 KB).
+  `/api/paste-file` (upstream) keeps its content-length `413`, streamed body
+  cap, 0600 files and sanitized names; its multipart scan uses `Buffer.indexOf`.
 - **Client terminal/websocket** (`useTerminal.ts`, `useWebSocket.ts`,
   `Terminal.tsx`, `App.tsx`): array-buffer output perf, `ResizeObserver`-based
   sizing, batched scroll-wheel input, layout hardening (`min-w-0`,
@@ -62,10 +64,29 @@ security → perf/safety → features.
   `isolate overflow-hidden` and upstream's theme `backgroundColor` (xterm 6).
 - **Hibernating-overlay fix** (`Terminal.tsx`): Tailwind `isolate` so overlay
   buttons receive clicks.
+- **Device-file paste adaptations** (`useTerminal.ts`, `useBrowserPaste.ts`):
+  Codex image paste stays on the Ctrl+V byte whenever the host clipboard is the
+  browser's (upstream uploads the image and types a path Codex ignores);
+  `useBrowserPaste.cancel()` keeps the state object when already idle, so the
+  per-switch cancel does not re-render the terminal.
+- **PR chip hardening** (`prExtractor.ts`, `prInfo.ts`, `PrChips.tsx`): session
+  hydration calls `getCachedSessionPullRequests`, which never scans a log from
+  the start inline. Cold logs, rewrites and catch-ups over 256 KB scan in the
+  background (1 MB per event-loop turn), then dormant lists republish. `gh pr
+  view` is deduped per PR and capped at 4 processes. The client checks cache
+  expires after 60 s and never stores errors; the chip fit memo keys on the
+  joined URLs.
+- **Grok telemetry filter** (`logDiscovery.isGrokTelemetryFile`): discovery,
+  `logMatcher` and `logMatchWorker`'s watcher `validPaths` accept only
+  `chat_history.jsonl` from a Grok session dir. Upstream's `validPaths` let
+  `events.jsonl`/`updates.jsonl` through, and their path-derived session id
+  overwrote the transcript's `last_known_log_size`/`last_activity_at`.
 - **Test-isolation hardening** (`src/server/__tests__/`): deterministic tmux
   teardown (`killTmuxServer` → `rmSync`), `TMUX_TMPDIR` isolation in every
   real-tmux test, `shutdownProcess` (SIGTERM→SIGKILL), bounded tmux-spawn
   timeouts, and the `scripts/test-runner.ts` default-socket + tmpdir sweep backstop.
+  The runner and `playwright.config.ts` point `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+  `PI_HOME` and `GROK_HOME` at throwaway dirs, so no test reads real agent logs.
   Every tmux call aimed at an isolated `TMUX_TMPDIR` must drop an inherited
   `TMUX`: it overrides `TMUX_TMPDIR`, so a run from a tmux pane hits the live server.
   `privateTmuxEnv()` builds such envs. The runner also gives every test process
@@ -160,11 +181,38 @@ we still report `version: 0.4.5`. Re-evaluate future drift with
 | `4671d40` outlier slow spawns bypass the rate limiter | **taken**. |
 | `953ef7c` `AGENTBOARD_ATTACH_DEDUP_MS` + double-attach de-flake | **taken** — the known-flaky note is gone. |
 | `3888f43` data-dir instance lock | **adapted** — lock half only (SessionList DnD half skipped); runner + e2e set `AGENTBOARD_DATA_DIR`. |
-| `49c2882` multipart parse without `formData()` | **skipped** — patches `src/server/routes/pasteFile.ts` (device-file paste, `34d936e`), which we don't have. |
-| `1de1223` prExtractor cache cap | **skipped** — PR-chip feature not taken. |
 | `9d28d18`, Devin parts of `02d9a0e` | **skipped** — no Devin support in our tree. |
 | `9f2e4ad` iOS identical-repaint selection fix | **skipped** — patches xterm's accessibility row repaint from the client (`a11yRowStability.ts`) plus iOS-sim tooling; not taken this round. |
 | `c99b1ac` per-connection grouped sessions for external sessions | **deferred** — adds sync tmux spawns per session switch. |
+| `057ee24` surface tmux copy mode | **taken** — the Copy mode / Exit control reads the existing 750 ms copy-mode poll and re-renders only on a change. |
+| `79d0036` mobile terminal controls | **skipped** — mobile-only (`md:` resets it on desktop); neither `057ee24` nor `34d936e` needs it textually. |
+| `09b5747` direct session shortcuts (mod+1..9) | **adapted** — the e2e target window is created on the private server via `-S`. |
+| `0d28f78` clipboard file paths | **taken**. |
+| `34d936e` device-file paste (`/api/paste-file`, `useBrowserPaste`, `PasteStatus`) | **adapted** — kept `493a6d4`'s `isInputReady` gating; see "Device-file paste adaptations" under ours. README keeps our 20 MB image cap; the mobile Paste button keeps our position and sizing; arrow-keys/manual-paste e2e specs dropped (not in our tree); browser-files e2e uses `-S`. |
+| `49c2882` multipart parse without `formData()` | **adapted** — byte search via `Buffer.indexOf` (40 MB body: 3.5 ms vs 48 ms on the event loop). |
+| `13d7b9b` Finder path trailing space | **taken**. |
+| `40fd99d` non-PNG clipboard images | **taken**. |
+| `b0f9e49`→`25ae9f1`→`1de1223` PR tracking via log parsing | **taken**; hydration then moved off the cold scan (see "PR chip hardening" under ours). |
+| `c7f5618` PR state dots + hover cards | **adapted** — dropped the `index.css` hunk that lifts a hovered `.session-row` to `z-index: 20`; the card renders through a portal. |
+| `14fe6fa`, `cf5ee89`, `e7e94b1`, `29f8d3f`, `c0a5dce`, `85f9f87`, `9b4fb59`, `b1ca734`, `927400b` PR chip fixes | **taken**. |
+| `2f04051` PR chip false positives | **adapted** — dropped `bunfig.toml` (release-age excludes for upstream's npm binaries); its Grok hunk landed with `e978133`. |
+| `e978133`→`5db356b` Grok log ingestion | **adapted** — no Devin; dropped the db CHECK, type unions and AgentIcon hunks (ours had grok); fixed the Grok telemetry leak (see ours). Wake resumes grok with `grok --resume {sessionId}` (`GROK_RESUME_CMD`) instead of falling through to the Codex command. |
+| `477ee62` modal mount focus timers | **adapted** — SettingsModal without `87dac1e`'s terminal-colors context; mobile-controls e2e hunk dropped. |
+| `d475e29` `is_pinned` → `is_hibernating` | **adapted** — `scripts/agb list` queries `is_hibernating = 1` in the same commit; fork tests renamed; dropped `notes/session-persistence-split.md` (upstream's plan, calls for WAL). In-place `RENAME COLUMN`, no down migration; verified on a snapshot of the live DB. |
+| `9a24e4d` match windows via AskUserQuestion recaps | **taken** — on top of `341d296`, uses the shared `isGrokTelemetryFile`. |
+| `b40a090` scroll selected session into view | **adapted** — the sidebar keeps our `sticky top-0 z-20` and gains `ref={listScrollRef}` + `scroll-pt-10`; the mobile strip keeps our spacing and `scroll-smooth`. |
+| `87dac1e` global terminal colors | **skipped** — not taken this round. |
+| `f2a85a1` Grok launch preset | **already had** — our presets carry `grok`. |
+| `4a0574e` subagent-created PR attribution | **skipped** — needs omp. |
+| `d26eeef`→`d9a7366` status rail | **skipped**. |
+| `6cff6bb` omp agent | **skipped**. |
+| `4128267`→`55e32ea` yolo mode | **skipped**. |
+| `dab8070` server-side settings sync | **skipped**. |
+| `37ee07e` numbered presets in the new-session modal | **skipped**. |
+| mobile chain `3a94c9e` `3a6d06f` `9b6cb05` `55fe125` `5b56134` `c8ca2bd` `2dcc329` `4f18cfa` `bf7647f` `3b1b35c` `90abd60` `b18750f` `185a65c` `9421d38` | **skipped** — our mobile controls stay on the DPad layout. |
+| Devin `3d8057f` `9c120b1` `4fb640d` | **skipped** — no Devin support in our tree. |
+| release/npm/CI chores (`303cc58` `eac4352` `6ae71d6` `d127a0a` `76c9a49` `777239b` `aeec6bb` `de19f47` `1c7f3da` `10431f2` `a0d9d55` `9117ee9` `54bf377` `6b9e769` `4b8528f` `869ea02` `771af30`, `chore(master): release …`, `sync optionalDeps …`) | **skipped** — upstream's release pipeline; `76c9a49`/`869ea02` would open release PRs or commit to our master. |
+| `5fd795b` hide bootstrap placeholder in external sessions | **not evaluated** — outside this round. |
 
 ### Naive-sync hazards (do NOT)
 
@@ -198,6 +246,18 @@ we still report `version: 0.4.5`. Re-evaluate future drift with
 - **Don't make paste or the copy-mode cancel fire-and-forget without ordering
   input behind them** — a keystroke that overtakes them submits early or lands
   in the copy-mode key table.
+- **Don't rename or drop an `agent_sessions` column without updating
+  `scripts/agb` in the same commit** — `agb list` reads the db with `sqlite3`
+  and queries `is_hibernating = 1`. A mismatch prints a `no such column`
+  error, then "No hibernating Agentboard sessions.", and exits 0. The
+  migration runs when the server starts, so the agb on disk must match the
+  server version that last opened the db. `agb.test.ts` covers `list`.
+- **Don't hydrate sessions through `getSessionPullRequests`** — it scans a cold
+  log from the start on the event loop (379 ms across 234 sessions at startup).
+  Hydration uses `getCachedSessionPullRequests`.
+- **Don't take upstream's paste flow over our Codex branch** — upstream checks
+  browser files before `hasImage`, which uploads a Codex image and types a
+  path instead of sending Ctrl+V.
 
 ## Watch-list (recurring concerns as we use this more)
 
@@ -238,7 +298,10 @@ we still report `version: 0.4.5`. Re-evaluate future drift with
   Enter), `probeWindow` when a tracked window is missing from a snapshot, the
   sync `listWindows` fallback when the refresh worker fails, paste
   (`load-buffer` + `paste-buffer`), and all pipe-pane mode input, scroll,
-  resize and its 2 s target monitor.
+  resize and its 2 s target monitor. Per refresh tick, each active session
+  also runs `getCachedSessionPullRequests` (a `statSync` plus at most 256 KB
+  of appended log when its size moved). Per xterm keydown: the mod+digit
+  shortcut check (regex + settings-store read).
 - **Caps & auth** — keep payload/size/MIME limits when editing endpoints/WS.
 - **tmux-resurrect/continuum boot race** — agentboard's launchd job starts the
   tmux server at login. If tmux-continuum's `@continuum-restore` is `on`, the
