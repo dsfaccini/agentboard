@@ -204,7 +204,7 @@ AGENTBOARD_CLIENT_LOG_MAX_BYTES=32768
 AGENTBOARD_PASTE_IMAGE_MAX_BYTES=20971520
 ```
 
-`HOSTNAME` controls which interfaces the server binds to (default `127.0.0.1` for localhost-only). Non-loopback bindings require `AGENTBOARD_AUTH_TOKEN`. Set `HOSTNAME=0.0.0.0` to listen on all interfaces only behind a trusted network boundary and with an auth token configured.
+`HOSTNAME` controls which interfaces the server binds to (default `127.0.0.1` for localhost-only). Non-loopback bindings require `AGENTBOARD_AUTH_TOKEN`. Set `HOSTNAME=0.0.0.0` to listen on all interfaces only behind a trusted network boundary and with an auth token configured. A `HOSTNAME` that merely equals the machine hostname is treated as auto-exported by the environment (containers and some CI images do this) and ignored with a warning, keeping the localhost default.
 
 `AGENTBOARD_AUTH_TOKEN` enables bearer/cookie auth for API and WebSocket control. Open `http://host:47329/?token=<token>` once to set the secure cookie for the browser, or pass `Authorization: Bearer <token>` for scripts. `/api/health` remains unauthenticated for service checks.
 
