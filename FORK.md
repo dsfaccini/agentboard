@@ -61,6 +61,8 @@ security → perf/safety → features.
   teardown (`killTmuxServer` → `rmSync`), `TMUX_TMPDIR` isolation in every
   real-tmux test, `shutdownProcess` (SIGTERM→SIGKILL), bounded tmux-spawn
   timeouts, and the `scripts/test-runner.ts` default-socket + tmpdir sweep backstop.
+  Every tmux call aimed at an isolated `TMUX_TMPDIR` must drop an inherited
+  `TMUX`: it overrides `TMUX_TMPDIR`, so a run from a tmux pane hits the live server.
 - **gh-gateway watchdog** (`src/server/ghGatewayWatchdog.ts`, wired in
   `index.ts`): macOS-only `setInterval` (60s) that shells out to David's
   `~/ai-coding-tools/github-graphql-proxy/scripts/gh-gateway-doctor.sh` to keep
