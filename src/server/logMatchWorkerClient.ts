@@ -74,6 +74,11 @@ export class LogMatchWorkerClient {
       const timeoutId = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error('Log match worker timed out'))
+        // A stalled worker keeps grinding its message queue and would swallow
+        // every subsequent request too, so fail anything queued behind this
+        // one and start fresh on a new worker.
+        this.failAll(new Error('Log match worker restarted after stall'))
+        this.restartWorker()
       }, timeoutMs)
 
       this.pending.set(id, { resolve, reject, timeoutId })
@@ -185,9 +190,22 @@ export class LogMatchWorkerClient {
 
   private restartWorker(): void {
     if (this.disposed) return
-    // Don't call worker.terminate() — abandon the old worker instead
-    this.worker = null
+    this.retireWorker()
     this.spawnWorker()
+  }
+
+  // Terminate rather than abandon: an abandoned stalled worker keeps a core
+  // spinning for the life of the process. Handlers are detached first so a
+  // late message or error from it cannot settle or restart its replacement.
+  // (terminate() segfaults only in compiled Bun binaries; we run from source.)
+  private retireWorker(): void {
+    const worker = this.worker
+    this.worker = null
+    if (!worker) return
+    worker.onmessage = null
+    worker.onerror = null
+    worker.onmessageerror = null
+    worker.terminate()
   }
 
   private handleMessage(response: MatchWorkerResponse): void {

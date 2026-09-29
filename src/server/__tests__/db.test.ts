@@ -1,6 +1,6 @@
 import { describe, expect, test, afterEach } from 'bun:test'
 import { Database as SQLiteDatabase } from 'bun:sqlite'
-import { initDatabase } from '../db'
+import { initDatabase, MAX_LAST_USER_MESSAGE_LENGTH } from '../db'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -83,6 +83,46 @@ describe('db', () => {
 
     const orphaned = db.orphanSession(session.sessionId)
     expect(orphaned?.currentWindow).toBeNull()
+  })
+
+  test('clamps last_user_message on insert and update', () => {
+    const long = 'x'.repeat(MAX_LAST_USER_MESSAGE_LENGTH + 10)
+    db.insertSession(makeSession({ lastUserMessage: long }))
+    expect(db.getSessionById('session-abc')?.lastUserMessage).toHaveLength(
+      MAX_LAST_USER_MESSAGE_LENGTH
+    )
+
+    db.updateSession('session-abc', { lastUserMessage: `${long}y` })
+    expect(db.getSessionById('session-abc')?.lastUserMessage).toBe(
+      long.slice(0, MAX_LAST_USER_MESSAGE_LENGTH)
+    )
+  })
+
+  test('getKnownSessionKeys covers every row without the message column', () => {
+    db.insertSession(makeSession({ lastUserMessage: 'hello' }))
+    db.insertSession(
+      makeSession({
+        sessionId: 'session-old',
+        logFilePath: '/tmp/session-old.jsonl',
+        currentWindow: null,
+        slug: 'old-slug',
+        agentType: 'codex',
+        isCodexExec: true,
+        lastActivityAt: '2020-01-01T00:00:00.000Z',
+      })
+    )
+
+    const keys = db.getKnownSessionKeys()
+    expect(keys).toHaveLength(2)
+    expect(keys).toContainEqual({
+      sessionId: 'session-old',
+      logFilePath: '/tmp/session-old.jsonl',
+      projectPath: '/tmp/alpha',
+      slug: 'old-slug',
+      agentType: 'codex',
+      isCodexExec: true,
+    })
+    expect(keys.every((key) => !('lastUserMessage' in key))).toBe(true)
   })
 
   test('stores claude-rp agent sessions', () => {

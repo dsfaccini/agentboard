@@ -170,8 +170,8 @@ describe('LogMatchWorkerClient', () => {
     worker.emitError('broken')
 
     await expect(promise).rejects.toThrow('Log match worker error')
-    // Worker is abandoned, not terminated (Bun bug BUN-118B)
-    expect(worker.terminated).toBe(false)
+    expect(worker.terminated).toBe(true)
+    expect(worker.onerror).toBeNull()
     expect(WorkerMock.instances.length).toBe(instancesBefore + 1)
   })
 
@@ -193,8 +193,42 @@ describe('LogMatchWorkerClient', () => {
     worker.emitMessageError()
 
     await expect(promise).rejects.toThrow('Log match worker message error')
-    // Worker is abandoned, not terminated (Bun bug BUN-118B)
-    expect(worker.terminated).toBe(false)
+    expect(worker.terminated).toBe(true)
+    expect(worker.onmessageerror).toBeNull()
     expect(WorkerMock.instances.length).toBe(instancesBefore + 1)
+  })
+
+  test('a timed-out poll terminates the stalled worker and fails queued requests', async () => {
+    const client = new LogMatchWorkerClient()
+    const worker = WorkerMock.instances[WorkerMock.instances.length - 1]
+    if (!worker) throw new Error('Worker not created')
+    const instancesBefore = WorkerMock.instances.length
+
+    const queued = client.poll({ windows: [], maxLogsPerPoll: 1, sessions: [], scrollbackLines: 10 })
+    const queuedError = queued.then(
+      () => null,
+      (error: unknown) => error
+    )
+    const queuedPayload = await waitForMessage(worker)
+    worker.lastMessage = null
+    const stalled = client.poll(
+      { windows: [], maxLogsPerPoll: 1, sessions: [], scrollbackLines: 10 },
+      { timeoutMs: 5 }
+    )
+
+    await expect(stalled).rejects.toThrow('Log match worker timed out')
+    expect(await queuedError).toEqual(new Error('Log match worker restarted after stall'))
+    expect(worker.terminated).toBe(true)
+    expect(worker.onmessage).toBeNull()
+    expect(WorkerMock.instances.length).toBe(instancesBefore + 1)
+
+    // The replacement serves new requests.
+    const replacement = WorkerMock.instances[WorkerMock.instances.length - 1]
+    const next = client.poll({ windows: [], maxLogsPerPoll: 1, sessions: [], scrollbackLines: 10 })
+    const payload = await waitForMessage(replacement)
+    expect(payload.id).not.toBe(queuedPayload.id)
+    replacement.emitMessage({ id: payload.id, type: 'result', entries: [] })
+    expect((await next).type).toBe('result')
+    client.dispose()
   })
 })

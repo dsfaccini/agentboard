@@ -220,6 +220,9 @@ async function main() {
       // any later test file that imports `../config` (notably
       // logPoller.test.ts, which depends on skipMatchingPatterns).
       'terminalProxyFactory.test.ts',
+      // Measures process-wide CPU time; workers or timers leaked by other
+      // files in a shared process would skew it.
+      'workerTerminate.test.ts',
     ])
 
     // These spawn real servers, PTYs, and tmux clients. They still need process

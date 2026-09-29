@@ -24,6 +24,10 @@ import type {
 const MIN_INTERVAL_MS = 2000
 const DEFAULT_INTERVAL_MS = 5000
 const DEFAULT_MAX_LOGS = 25
+// The worker only inspects lastUserMessage to decide whether to re-extract it
+// from the log (presence + isToolNotificationText, both prefix-safe), so a
+// short prefix is enough — full texts made each postMessage clone ~100+ MB.
+const SNAPSHOT_MESSAGE_MAX_LENGTH = 2048
 const STARTUP_LAST_MESSAGE_BACKFILL_MAX = 100
 const MIN_LOG_TOKENS_FOR_INSERT = 1
 const REMATCH_COOLDOWN_MS = 60 * 1000 // 1 minute between re-match attempts
@@ -46,6 +50,13 @@ interface SessionRecord {
   wakeStartedAt: string | null
   lastKnownLogSize: number | null
   isCodexExec: boolean
+}
+
+function toSnapshotMessage(message: string | null): string | null {
+  if (message && message.length > SNAPSHOT_MESSAGE_MAX_LENGTH) {
+    return message.slice(0, SNAPSHOT_MESSAGE_MAX_LENGTH)
+  }
+  return message
 }
 
 // Fields that applyLogEntryToExistingRecord may update
@@ -373,7 +384,7 @@ export class LogPoller {
         logFilePath: session.logFilePath,
         currentWindow: session.currentWindow,
         lastActivityAt: session.lastActivityAt,
-        lastUserMessage: session.lastUserMessage,
+        lastUserMessage: toSnapshotMessage(session.lastUserMessage),
         lastKnownLogSize: null, // Force re-check for orphan matching
       }))
 
@@ -560,19 +571,10 @@ export class LogPoller {
         logFilePath: session.logFilePath,
         currentWindow: session.currentWindow,
         lastActivityAt: session.lastActivityAt,
-        lastUserMessage: session.lastUserMessage,
+        lastUserMessage: toSnapshotMessage(session.lastUserMessage),
         lastKnownLogSize: session.lastKnownLogSize,
       }))
-      const knownSessions: KnownSession[] = sessionRecords
-        .filter((session) => session.logFilePath)
-        .map((session) => ({
-          logFilePath: session.logFilePath,
-          sessionId: session.sessionId,
-          projectPath: session.projectPath ?? null,
-          slug: session.slug ?? null,
-          agentType: session.agentType ?? null,
-          isCodexExec: session.isCodexExec,
-        }))
+      const knownSessions: KnownSession[] = this.db.getKnownSessionKeys()
 
       const response = await this.matchWorker.poll({
         windows,
@@ -990,19 +992,10 @@ export class LogPoller {
         logFilePath: session.logFilePath,
         currentWindow: session.currentWindow,
         lastActivityAt: session.lastActivityAt,
-        lastUserMessage: session.lastUserMessage,
+        lastUserMessage: toSnapshotMessage(session.lastUserMessage),
         lastKnownLogSize: session.lastKnownLogSize,
       }))
-      const knownSessions: KnownSession[] = sessionRecords
-        .filter((session) => session.logFilePath)
-        .map((session) => ({
-          logFilePath: session.logFilePath,
-          sessionId: session.sessionId,
-          projectPath: session.projectPath ?? null,
-          slug: session.slug ?? null,
-          agentType: session.agentType ?? null,
-          isCodexExec: session.isCodexExec,
-        }))
+      const knownSessions: KnownSession[] = this.db.getKnownSessionKeys()
 
       const lastMessageCandidates: LastMessageCandidate[] = []
       if (this.startupLastMessageBackfillPending) {
