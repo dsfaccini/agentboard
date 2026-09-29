@@ -2931,6 +2931,7 @@ describe('server message handlers', () => {
     )
     // Grouped pty attach targets the pane (`:1`), not the bare session name.
     expect(copyModeTarget).toBe(`${groupedTarget}:1`)
+    await new Promise((r) => setTimeout(r, 0))
 
     // The fullscreen flags from tmux propagate to the client (appMouse drives the
     // client's decision to stop hijacking mouse events into copy-mode).
@@ -3048,6 +3049,7 @@ describe('server message handlers', () => {
 
     let sendKeysTarget = ''
     let displayTarget = ''
+    let displayCalls = 0
     spawnSyncImpl = ((...args: Parameters<typeof Bun.spawnSync>) => {
       const command = Array.isArray(args[0]) ? args[0] : [String(args[0])]
       const tmuxArgs = getTmuxArgs(command as string[])
@@ -3055,6 +3057,7 @@ describe('server message handlers', () => {
         sendKeysTarget = tmuxArgs[3] ?? ''
       }
       if (tmuxArgs[0] === 'display-message') {
+        displayCalls += 1
         displayTarget = tmuxArgs[3] ?? ''
         // Format: pane_in_mode,alternate_on,mouse_any_flag — classic copy-mode here.
         return {
@@ -3083,13 +3086,22 @@ describe('server message handlers', () => {
       ws as never,
       JSON.stringify({ type: 'tmux-check-copy-mode', sessionId: baseSession.id })
     )
+    // A poll that lands while a probe is in flight is dropped, not stacked.
+    websocket.message?.(
+      ws as never,
+      JSON.stringify({ type: 'tmux-check-copy-mode', sessionId: baseSession.id })
+    )
+    await new Promise((r) => setTimeout(r, 0))
 
     expect(sendKeysTarget).toBe('agentboard:1.1')
     expect(displayTarget).toBe('agentboard:1.1')
+    expect(displayCalls).toBe(1)
 
-    const statusMessage = sent.find(
+    const statusMessages = sent.filter(
       (message) => message.type === 'tmux-copy-mode-status'
     )
+    expect(statusMessages).toHaveLength(1)
+    const statusMessage = statusMessages[0]
     expect(statusMessage).toEqual({
       type: 'tmux-copy-mode-status',
       sessionId: baseSession.id,

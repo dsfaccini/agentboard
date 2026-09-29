@@ -2726,10 +2726,15 @@ async function handleCancelCopyMode(sessionId: string, ws: ServerWebSocket<WSDat
   }
 }
 
+// The client polls copy-mode every 750ms; a slow tmux must not stack probes.
+const copyModeCheckInFlight = new WeakSet<ServerWebSocket<WSData>>()
+
 async function handleCheckCopyMode(sessionId: string, ws: ServerWebSocket<WSData>) {
   const session = registry.get(sessionId)
   if (!session) return
   if (session.remote && !config.remoteAllowAttach) return
+  if (copyModeCheckInFlight.has(ws)) return
+  copyModeCheckInFlight.add(ws)
 
   try {
     const target = resolveCopyModeTarget(sessionId, ws, session)
@@ -2743,11 +2748,9 @@ async function handleCheckCopyMode(sessionId: string, ws: ServerWebSocket<WSData
       const result = await runRemoteTmux(session.host, ['display-message', '-p', '-t', target, fmt])
       output = result.stdout?.trim() ?? ''
     } else {
-      const result = Bun.spawnSync(
-        ['tmux', ...withTmuxUtf8Flag(['display-message', '-p', '-t', target, fmt])],
-        { stdout: 'pipe', stderr: 'pipe', timeout: 5000 }
-      )
-      output = result.stdout?.toString().trim() ?? ''
+      // Async: this runs on every poll, and a sync spawn would stall all
+      // terminal I/O on the event loop whenever tmux is slow.
+      output = (await readTmuxCapture(['display-message', '-p', '-t', target, fmt]))?.trim() ?? ''
     }
     const [inCopyModeField, altScreenField, appMouseField] = output.split(',')
     const inCopyMode = inCopyModeField === '1'
@@ -2757,6 +2760,8 @@ async function handleCheckCopyMode(sessionId: string, ws: ServerWebSocket<WSData
   } catch {
     // On error, assume not in copy mode and no fullscreen app
     send(ws, { type: 'tmux-copy-mode-status', sessionId, inCopyMode: false, altScreen: false, appMouse: false })
+  } finally {
+    copyModeCheckInFlight.delete(ws)
   }
 }
 
