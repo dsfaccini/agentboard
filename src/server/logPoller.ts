@@ -290,18 +290,19 @@ export class LogPoller {
     }
   }
 
-  /** Active + hibernating + age-filtered history — shared by poll / rematch paths. */
+  /** Active + hibernating + age-filtered history — the poll paths' snapshot. */
   private loadSessionRecordsForMatch(): ReturnType<SessionDatabase['getActiveSessions']> {
+    return [...this.db.getActiveSessions(), ...this.loadDormantSessionRecords()]
+  }
+
+  /** Hibernating + age-filtered history (same window as the UI). */
+  private loadDormantSessionRecords(): ReturnType<SessionDatabase['getActiveSessions']> {
     const maxAgeHours = this.getHistoryMaxAgeHours()
     const history =
       typeof maxAgeHours === 'number' && Number.isFinite(maxAgeHours) && maxAgeHours > 0
         ? this.db.getHistorySessions({ maxAgeHours })
         : this.db.getHistorySessions()
-    return [
-      ...this.db.getActiveSessions(),
-      ...this.db.getHibernatingSessions(),
-      ...history,
-    ]
+    return [...this.db.getHibernatingSessions(), ...history]
   }
 
   /** Drop expired / oversized cache entries so multi-day uptime doesn't retain every path ever seen. */
@@ -341,14 +342,40 @@ export class LogPoller {
 
     try {
       const windows = this.registry.getAll()
+      const activeSessions = this.db.getActiveSessions()
+      const initiallyClaimedWindows = new Set(
+        activeSessions
+          .map((session) => session.currentWindow)
+          .filter(Boolean) as string[]
+      )
+      const unclaimedWindows = windows.filter(
+        (window) => !initiallyClaimedWindows.has(window.tmuxWindow)
+      )
+
+      // The common restart path already has a persisted owner for every live
+      // window. Avoid loading all history rows or touching any log files when
+      // there is nothing the rematcher can claim.
+      if (unclaimedWindows.length === 0) {
+        logger.info('orphan_rematch_skip', {
+          reason: 'no_unclaimed_windows',
+          windowCount: windows.length,
+        })
+        return
+      }
+
+      const rematchStartedAt = Date.now()
+      const selectionStartedAt = Date.now()
+      const dormantSessions = this.loadDormantSessionRecords()
       const logDirs = getLogSearchDirs()
-      const sessionRecords = this.loadSessionRecordsForMatch()
       const excludedProjects = config.excludeProjects ?? []
 
-      // Build orphan candidates - sessions without active windows
+      // Build eligible dormant candidates. Project and agent metadata are not
+      // hard filters here: the content matcher treats them as soft preferences,
+      // which preserves recovery after a repo move, symlink change, or relaunch
+      // from a different worktree path.
       const orphanCandidates: OrphanCandidate[] = []
-      for (const record of sessionRecords) {
-        if (record.currentWindow) continue
+      const orphanRecords: typeof dormantSessions = []
+      for (const record of dormantSessions) {
         if (!canAttemptDormantRematch(record)) continue
         const logFilePath = record.logFilePath
         if (!logFilePath) continue
@@ -362,6 +389,7 @@ export class LogPoller {
           })
           if (shouldExclude) continue
         }
+        orphanRecords.push(record)
         orphanCandidates.push({
           sessionId: record.sessionId,
           logFilePath,
@@ -372,14 +400,26 @@ export class LogPoller {
       }
 
       if (orphanCandidates.length === 0) {
-        logger.info('orphan_rematch_skip', { reason: 'no_orphans' })
+        logger.info('orphan_rematch_skip', {
+          reason: 'no_orphans',
+          unclaimedWindowCount: unclaimedWindows.length,
+          selectionMs: Date.now() - selectionStartedAt,
+        })
         return
       }
 
-      logger.info('orphan_rematch_start', { orphanCount: orphanCandidates.length })
+      const selectionMs = Date.now() - selectionStartedAt
+      logger.info('orphan_rematch_start', {
+        orphanCount: orphanCandidates.length,
+        unclaimedWindowCount: unclaimedWindows.length,
+        selectionMs,
+      })
 
       // Run orphan rematch on dedicated worker - doesn't block regular polling
-      const sessions: SessionSnapshot[] = sessionRecords.map((session) => ({
+      const sessions: SessionSnapshot[] = [
+        ...activeSessions,
+        ...orphanRecords,
+      ].map((session) => ({
         sessionId: session.sessionId,
         logFilePath: session.logFilePath,
         currentWindow: session.currentWindow,
@@ -414,12 +454,7 @@ export class LogPoller {
         windows.map((window) => [window.tmuxWindow, window])
       )
       // Track claimed windows and matched orphan sessionIds for name fallback
-      const claimedWindows = new Set(
-        this.db
-          .getActiveSessions()
-          .map((s) => s.currentWindow)
-          .filter(Boolean) as string[]
-      )
+      const claimedWindows = new Set(initiallyClaimedWindows)
       const matchedOrphanSessionIds = new Set<string>()
       let orphanMatches = 0
 
@@ -518,6 +553,9 @@ export class LogPoller {
       logger.info('orphan_rematch_complete', {
         orphanCount: orphanCandidates.length,
         matches: orphanMatches,
+        unclaimedWindowCount: unclaimedWindows.length,
+        selectionMs,
+        durationMs: Date.now() - rematchStartedAt,
       })
     } catch (error) {
       logger.warn('orphan_rematch_error', {
@@ -971,6 +1009,9 @@ export class LogPoller {
     this.pollInFlight = true
     const start = Date.now()
     let workerErrors = 0
+    let snapshotMs = 0
+    let workerMs = 0
+    let processMs = 0
 
     try {
       const windows = this.registry.getAll()
@@ -1017,8 +1058,10 @@ export class LogPoller {
           })
         }
       }
+      snapshotMs = Date.now() - start
 
       let response: MatchWorkerResponse | null = null
+      const workerStartedAt = Date.now()
       if (!this.matchWorker) {
         if (!this.warnedWorkerDisabled) {
           this.warnedWorkerDisabled = true
@@ -1059,6 +1102,7 @@ export class LogPoller {
           })
         }
       }
+      workerMs = Date.now() - workerStartedAt
 
       if (response?.profile) {
         logger.info('log_match_profile', {
@@ -1074,6 +1118,7 @@ export class LogPoller {
         })
       }
 
+      const processStartedAt = Date.now()
       const processed = response
         ? this.processMatchResponse(response, windows, sessionRecords)
         : {
@@ -1084,6 +1129,7 @@ export class LogPoller {
             errors: 0,
             durationMs: 0,
           }
+      processMs = Date.now() - processStartedAt
 
       const durationMs = Date.now() - start
       const stats: PollStats = {
@@ -1095,7 +1141,15 @@ export class LogPoller {
         durationMs,
       }
 
-      logger.info('log_poll', { ...stats })
+      logger.info('log_poll', {
+        ...stats,
+        snapshotMs,
+        workerMs,
+        processMs,
+        workerScanMs: response?.scanMs ?? null,
+        workerSortMs: response?.sortMs ?? null,
+        workerMatchMs: response?.matchMs ?? null,
+      })
       this.notifyOrphanSessionsDiscovered(stats.orphans)
       this.pruneMatchCaches()
       return stats
