@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { initDatabase } from '../db'
-import { createTmuxTmpDir, isTmuxAvailable, killTmuxServer } from './testEnvironment'
+import { createTmuxTmpDir, isTmuxAvailable, killTmuxServer, privateTmuxEnv } from './testEnvironment'
 
 const tmuxAvailable = isTmuxAvailable()
 
@@ -21,10 +21,9 @@ if (!tmuxAvailable) {
     const commandRecordPath = path.join(homeDir, 'agent-command.txt')
     const scriptPath = path.join(process.cwd(), 'scripts', 'agb')
     const environment: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...privateTmuxEnv(tmuxTmpDir),
       HOME: homeDir,
       PATH: `${commandDir}:${process.env.PATH ?? ''}`,
-      TMUX_TMPDIR: tmuxTmpDir,
       AGENTBOARD_DB_PATH: databasePath,
       AGB_TEST_RECORD_PATH: commandRecordPath,
       AGB_SKIP_SERVICE_CHECK: '1',

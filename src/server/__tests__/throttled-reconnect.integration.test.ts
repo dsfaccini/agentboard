@@ -39,6 +39,7 @@ import {
   createTmuxTmpDir,
   isTmuxAvailable,
   killTmuxServer,
+  privateTmuxEnv,
   shutdownProcess,
   waitForTmuxWindows,
 } from './testEnvironment'
@@ -75,10 +76,7 @@ if (!tmuxAvailable || !localhostBindable) {
     let tmuxWindowTarget = ''
     let discoveredSessionId = ''
 
-    const tmuxEnv = (): NodeJS.ProcessEnv =>
-      tmuxTmpDir
-        ? { ...process.env, TMUX_TMPDIR: tmuxTmpDir }
-        : { ...process.env }
+    const tmuxEnv = (): NodeJS.ProcessEnv => privateTmuxEnv(tmuxTmpDir)
 
     beforeAll(async () => {
       tmuxTmpDir = createTmuxTmpDir('agentboard-tt-')
@@ -126,7 +124,7 @@ if (!tmuxAvailable || !localhostBindable) {
       serverProcess = Bun.spawn(['bun', 'src/server/index.ts'], {
         cwd: process.cwd(),
         env: {
-          ...process.env,
+          ...privateTmuxEnv(tmuxTmpDir),
           PORT: String(serverPort),
           TMUX_SESSION: sessionName,
           DISCOVER_PREFIXES: '',
@@ -136,7 +134,6 @@ if (!tmuxAvailable || !localhostBindable) {
           LOG_LEVEL: 'debug',
           LOG_FILE: logFilePath,
           AGENTBOARD_LOG_MATCH_WORKER: 'false',
-          ...(tmuxTmpDir ? { TMUX_TMPDIR: tmuxTmpDir } : {}),
         },
         stdout: 'pipe',
         stderr: 'pipe',

@@ -7,6 +7,7 @@ import {
   canBindLocalhost,
   createTmuxTmpDir,
   isTmuxAvailable,
+  privateTmuxEnv,
   killTmuxServer,
   shutdownProcess,
 } from './testEnvironment'
@@ -44,8 +45,7 @@ if (!tmuxAvailable || !localhostBindable) {
       serverProcess = Bun.spawn(['bun', 'src/server/index.ts'], {
         cwd: process.cwd(),
         env: {
-          ...process.env,
-          TMUX_TMPDIR: tmuxTmpDir,
+          ...privateTmuxEnv(tmuxTmpDir),
           PORT: String(port),
           TMUX_SESSION: sessionName,
           DISCOVER_PREFIXES: '',

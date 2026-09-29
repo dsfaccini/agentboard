@@ -11,6 +11,7 @@ import {
   createTmuxTmpDir,
   isTmuxAvailable,
   killTmuxServer,
+  privateTmuxEnv,
   shutdownProcess,
   waitForTmuxWindows,
 } from './testEnvironment'
@@ -39,8 +40,7 @@ if (!tmuxAvailable || !localhostBindable) {
     let tmuxTmpDir: string | null = null
     let claudeConfigDir: string | null = null
     const extraAgentHomeDirs: string[] = []
-    const tmuxEnv = (): NodeJS.ProcessEnv =>
-      tmuxTmpDir ? { ...process.env, TMUX_TMPDIR: tmuxTmpDir } : { ...process.env }
+    const tmuxEnv = (): NodeJS.ProcessEnv => privateTmuxEnv(tmuxTmpDir)
     const createAgentHomeDir = (prefix: string): string => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
       extraAgentHomeDirs.push(dir)
@@ -145,7 +145,7 @@ if (!tmuxAvailable || !localhostBindable) {
       const codexDir = createAgentHomeDir('agentboard-codex-')
       const piDir = createAgentHomeDir('agentboard-pi-')
       const env: NodeJS.ProcessEnv = {
-        ...process.env,
+        ...privateTmuxEnv(tmuxTmpDir),
         PORT: String(port),
         TMUX_SESSION: sessionName,
         DISCOVER_PREFIXES: '',
@@ -383,7 +383,7 @@ if (!tmuxAvailable || !localhostBindable) {
         const codexDir = createAgentHomeDir('agentboard-codex-')
         const piDir = createAgentHomeDir('agentboard-pi-')
         const env: NodeJS.ProcessEnv = {
-          ...process.env,
+          ...privateTmuxEnv(tmuxTmpDir),
           PORT: String(port),
           TMUX_SESSION: sessionName,
           DISCOVER_PREFIXES: '',

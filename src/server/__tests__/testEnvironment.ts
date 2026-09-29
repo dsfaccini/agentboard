@@ -41,6 +41,28 @@ export function createTmuxTmpDir(prefix = 'agentboard-tmux-'): string {
 }
 
 /**
+ * Builds an environment pinned to the private tmux server under tmuxTmpDir.
+ * TMUX is scrubbed on the copy rather than relying on createTmuxTmpDir's
+ * mutation having run first: tmux resolves the socket from $TMUX before
+ * TMUX_TMPDIR, so an inherited TMUX silently redirects every call to the
+ * user's live server. Kill and teardown calls still go through
+ * killTmuxServer's explicit -S socket, never through this env alone.
+ */
+export function privateTmuxEnv(
+  tmuxTmpDir: string | null
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  delete env.TMUX
+  if (tmuxTmpDir) env.TMUX_TMPDIR = tmuxTmpDir
+  return env
+}
+
+/** Socket path of the private server created under tmuxTmpDir, for `tmux -S`. */
+export function privateTmuxSocket(tmuxTmpDir: string): string {
+  return path.join(tmuxTmpDir, `tmux-${os.userInfo().uid}`, 'default')
+}
+
+/**
  * Stop a spawned process deterministically: SIGTERM, then escalate to SIGKILL
  * if it doesn't exit within `timeoutMs`. Avoids an unbounded `await
  * proc.exited` when the process's graceful-shutdown handler stalls.
@@ -81,9 +103,8 @@ export async function shutdownProcess(
  * default socket, so kill-server would take down the developer's live server.
  */
 export function killTmuxServer(tmuxTmpDir: string): void {
-  const socket = path.join(tmuxTmpDir, `tmux-${os.userInfo().uid}`, 'default')
   try {
-    Bun.spawnSync(['tmux', '-S', socket, 'kill-server'], {
+    Bun.spawnSync(['tmux', '-S', privateTmuxSocket(tmuxTmpDir), 'kill-server'], {
       stdout: 'ignore',
       stderr: 'ignore',
       // Bound the call so a wedged tmux server can't hang teardown.
@@ -132,7 +153,8 @@ export async function waitForTmuxWindows(
   env?: NodeJS.ProcessEnv,
   options: { timeoutMs?: number; pollMs?: number } = {}
 ): Promise<string[]> {
-  const timeoutMs = options.timeoutMs ?? 2000
+  // Under load the private server can take >2s to publish its socket.
+  const timeoutMs = options.timeoutMs ?? 10000
   const pollMs = options.pollMs ?? 100
   const startedAt = Date.now()
   let lastResult: TmuxWindowListResult = {
