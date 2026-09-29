@@ -175,6 +175,11 @@ async function main() {
     CODEX_HOME: codexDir,
     LOG_FILE: tempLogFile,
     AGENTBOARD_DB_PATH: tempDbPath,
+    // SessionManager SIGUSR1s the tmux server recorded in this file when its
+    // socket vanishes. Test servers start with no socket on their private
+    // TMUX_TMPDIR, so the shared default file would point them at the live
+    // tmux server.
+    AGENTBOARD_TMUX_PID_FILE: path.join(tempRoot, 'tmux-server.pid'),
     // Default skipMatchingPatterns excludes /tmp/* and /var/folders/* — both
     // common locations for test working directories (worktrees, CI runners on
     // some platforms). Tests that exercise matching logic from those paths
