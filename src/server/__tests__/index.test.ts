@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { settleServerStartup } from './testEnvironment'
 
 const bunAny = Bun as typeof Bun & {
   serve: typeof Bun.serve
@@ -57,7 +58,7 @@ describe('server entrypoint', () => {
 
   test('starts server without side effects', async () => {
     importCounter += 1
-    await import(`../index?test=no-side-effects-${importCounter}`)
+    await settleServerStartup(await import(`../index?test=no-side-effects-${importCounter}`))
 
     const expectedPort = Number(process.env.PORT) || 47329
     expect(serveCalls).toHaveLength(1)
@@ -79,7 +80,7 @@ describe('server entrypoint', () => {
     }) as typeof Bun.spawnSync
 
     importCounter += 1
-    await import(`../index?test=missing-lsof-${importCounter}`)
+    await settleServerStartup(await import(`../index?test=missing-lsof-${importCounter}`))
 
     const expectedPort = Number(process.env.PORT) || 47329
     expect(serveCalls).toHaveLength(1)

@@ -63,6 +63,18 @@ export function privateTmuxSocket(tmuxTmpDir: string): string {
 }
 
 /**
+ * Await the server entrypoint's post-bind startup chain (`startupReady`).
+ * Tests that import index.ts under Bun.spawnSync/Bun.serve mocks must let it
+ * settle before restoring them; otherwise the chain finishes against the real
+ * Bun.spawnSync and its tmux calls reach whatever server the env resolves to.
+ */
+export async function settleServerStartup(mod: unknown): Promise<void> {
+  if (mod && typeof mod === 'object' && 'startupReady' in mod) {
+    await mod.startupReady
+  }
+}
+
+/**
  * Stop a spawned process deterministically: SIGTERM, then escalate to SIGKILL
  * if it doesn't exit within `timeoutMs`. Avoids an unbounded `await
  * proc.exited` when the process's graceful-shutdown handler stalls.

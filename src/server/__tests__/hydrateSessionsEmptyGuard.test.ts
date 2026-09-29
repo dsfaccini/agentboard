@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { initDatabase } from '../db'
 import type { Session } from '../../shared/types'
+import { settleServerStartup } from './testEnvironment'
 
 const bunAny = Bun as typeof Bun & {
   serve: typeof Bun.serve
@@ -153,6 +154,7 @@ describe('hydrateSessionsWithAgentSessions — missing windows', () => {
     const mod = await import(
       `../index?test=hydrate-empty-guard-${Date.now()}-${Math.random().toString(36).slice(2)}`
     )
+    await settleServerStartup(mod)
     hydrate = (mod as { hydrateSessionsWithAgentSessions: typeof hydrate }).hydrateSessionsWithAgentSessions
   })
 

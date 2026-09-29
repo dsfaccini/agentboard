@@ -6,6 +6,7 @@ import type {
   DirectoryListing,
   DirectoryErrorResponse,
 } from '@shared/types'
+import { settleServerStartup } from './testEnvironment'
 
 const bunAny = Bun as typeof Bun & {
   serve: typeof Bun.serve
@@ -37,7 +38,7 @@ async function loadIndex() {
   const originalLogPoll = process.env.AGENTBOARD_LOG_POLL_MS
   process.env.AGENTBOARD_LOG_POLL_MS = '0'
   try {
-    await import(`../index?directories=${importCounter}`)
+    await settleServerStartup(await import(`../index?directories=${importCounter}`))
   } finally {
     if (originalLogPoll === undefined) {
       delete process.env.AGENTBOARD_LOG_POLL_MS
