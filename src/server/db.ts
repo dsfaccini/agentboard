@@ -162,6 +162,13 @@ export function initDatabase(options: { path?: string } = {}): SessionDatabase {
   ensureDataDir(dbPath)
 
   const db = new SQLiteDatabase(dbPath)
+  // Wait briefly for a lock another connection holds (scripts/agb reads this
+  // db with sqlite3 while the server runs) instead of failing at once with
+  // "database is locked". Kept short: bun:sqlite waits synchronously on the
+  // main thread, and a poll can issue ~25 writes. No WAL: with agb as a
+  // second process, Bun's SQLite 3.51.0 is exposed to the WAL-reset race
+  // fixed in 3.51.3.
+  db.exec('PRAGMA busy_timeout = 250')
   migrateDatabase(db)
   db.exec(CREATE_TABLE_SQL)
   db.exec(CREATE_APP_SETTINGS_TABLE_SQL)

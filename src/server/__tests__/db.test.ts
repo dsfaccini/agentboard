@@ -85,6 +85,18 @@ describe('db', () => {
     expect(orphaned?.currentWindow).toBeNull()
   })
 
+  test('opens with a short busy_timeout and keeps the rollback journal', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentboard-db-pragma-'))
+    const fileDb = initDatabase({ path: path.join(dir, 'agentboard.db') })
+    try {
+      expect(fileDb.db.query('PRAGMA busy_timeout').get()).toEqual({ timeout: 250 })
+      expect(fileDb.db.query('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' })
+    } finally {
+      fileDb.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('clamps last_user_message on insert and update', () => {
     const long = 'x'.repeat(MAX_LAST_USER_MESSAGE_LENGTH + 10)
     db.insertSession(makeSession({ lastUserMessage: long }))

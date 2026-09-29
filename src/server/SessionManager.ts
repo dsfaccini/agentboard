@@ -8,6 +8,7 @@ import { generateSessionName } from './nameGenerator'
 import { logger } from './logger'
 import { resolveProjectPath } from './paths'
 import { TmuxTimeoutError } from './tmuxTimeout'
+import { timedSpawnSync } from './syncSpawnTiming'
 import { sanitizedTmuxEnv } from './tmuxEnv'
 import {
   BOOTSTRAP_WINDOW_COMMAND,
@@ -861,7 +862,7 @@ function runTmux(args: string[]): string {
   const timeout = TMUX_MUTATION_COMMANDS.has(command)
     ? config.tmuxMutationTimeoutMs
     : config.tmuxTimeoutMs
-  const result = Bun.spawnSync(['tmux', ...args], {
+  const result = timedSpawnSync(['tmux', ...args], {
     stdout: 'pipe',
     stderr: 'pipe',
     timeout,
@@ -939,7 +940,7 @@ function isTmuxServerProcess(pid: number): boolean {
     return false
   }
 
-  const result = Bun.spawnSync(['ps', '-p', String(pid), '-o', 'comm='], {
+  const result = timedSpawnSync(['ps', '-p', String(pid), '-o', 'comm='], {
     stdout: 'pipe',
     stderr: 'ignore',
     timeout: config.tmuxTimeoutMs,
@@ -1041,7 +1042,7 @@ function inferStatus(
 
 function capturePaneWithDimensions(tmuxWindow: string): PaneCapture | null {
   try {
-    const dimsResult = Bun.spawnSync(
+    const dimsResult = timedSpawnSync(
       ['tmux',
         ...withTmuxUtf8Flag([
         'display-message',
@@ -1078,7 +1079,7 @@ function capturePaneWithDimensions(tmuxWindow: string): PaneCapture | null {
 
     // Use -J to unwrap lines and only capture visible content (no scrollback)
     // This prevents false positives from scrollback buffer changes on window focus
-    const result = Bun.spawnSync(
+    const result = timedSpawnSync(
       ['tmux', ...withTmuxUtf8Flag([
         'capture-pane',
         '-t',

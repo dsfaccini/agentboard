@@ -78,13 +78,14 @@ import {
   splitTmuxLines,
   withTmuxUtf8Flag,
 } from './tmuxFormat'
+import { timedSpawnSync } from './syncSpawnTiming'
 
 function checkPortAvailable(port: number): void {
   let result: ReturnType<typeof Bun.spawnSync>
   try {
     // Use -sTCP:LISTEN to only match processes actually listening on the port,
     // not stale/closed connections from other processes (e.g. Playwright/Chrome)
-    result = Bun.spawnSync(['lsof', '-i', `:${port}`, '-sTCP:LISTEN', '-t'], {
+    result = timedSpawnSync(['lsof', '-i', `:${port}`, '-sTCP:LISTEN', '-t'], {
       stdout: 'pipe',
       stderr: 'pipe',
     })
@@ -98,7 +99,7 @@ function checkPortAvailable(port: number): void {
     // Get process name
     let processName = 'unknown'
     try {
-      const nameResult = Bun.spawnSync(['ps', '-p', pid, '-o', 'comm='], {
+      const nameResult = timedSpawnSync(['ps', '-p', pid, '-o', 'comm='], {
         stdout: 'pipe',
         stderr: 'pipe',
       })
@@ -378,7 +379,7 @@ function getTailscaleIp(): string | null {
 
   for (const tsPath of tailscalePaths) {
     try {
-      const result = Bun.spawnSync([tsPath, 'ip', '-4'], {
+      const result = timedSpawnSync([tsPath, 'ip', '-4'], {
         stdout: 'pipe',
         stderr: 'pipe',
       })
@@ -405,7 +406,7 @@ function pruneOrphanedWsSessions(): void {
 
   let result: ReturnType<typeof Bun.spawnSync>
   try {
-    result = Bun.spawnSync(
+    result = timedSpawnSync(
       ['tmux', ...withTmuxUtf8Flag([
         'list-sessions',
         '-F',
@@ -447,7 +448,7 @@ function pruneOrphanedWsSessions(): void {
     const attached = Number.parseInt(attachedRaw ?? '', 10)
     if (Number.isNaN(attached) || attached > 0) continue
     try {
-      const killResult = Bun.spawnSync(['tmux', 'kill-session', '-t', name], {
+      const killResult = timedSpawnSync(['tmux', 'kill-session', '-t', name], {
         stdout: 'pipe',
         stderr: 'pipe',
         timeout: config.tmuxTimeoutMs,
@@ -1324,25 +1325,32 @@ startStuckShellReaper() // fork-only: free ptys pinned by tmux grouped-session c
 
 // Event loop lag monitor — detects when spawnSync or other blocking work
 // starves the event loop, causing typing lag and slow WebSocket delivery.
-if (logLevel === 'debug') {
-  const EL_CHECK_MS = 500
-  let elLastTick = performance.now()
-  setInterval(() => {
-    const now = performance.now()
-    const lagMs = Math.round(now - elLastTick - EL_CHECK_MS)
-    elLastTick = now
-    if (lagMs > 100) {
-      const [load1, load5, load15] = os.loadavg()
-      logger.debug('event_loop_lag', {
-        lagMs,
-        load1: Math.round(load1 * 100) / 100,
-        load5: Math.round(load5 * 100) / 100,
-        load15: Math.round(load15 * 100) / 100,
-        cpus: os.cpus().length,
-      })
+// The check timer fires late exactly when a stall ends, so each warn-level
+// line records one freeze's duration. Warn at >1s (user-visible stalls);
+// debug covers milder jitter when LOG_LEVEL=debug.
+const EL_CHECK_MS = 500
+const EL_WARN_LAG_MS = 1000
+let elLastTick = performance.now()
+setInterval(() => {
+  const now = performance.now()
+  const lagMs = Math.round(now - elLastTick - EL_CHECK_MS)
+  elLastTick = now
+  if (lagMs > 100) {
+    const [load1, load5, load15] = os.loadavg()
+    const payload = {
+      lagMs,
+      load1: Math.round(load1 * 100) / 100,
+      load5: Math.round(load5 * 100) / 100,
+      load15: Math.round(load15 * 100) / 100,
+      cpus: os.cpus().length,
     }
-  }, EL_CHECK_MS)
-}
+    if (lagMs >= EL_WARN_LAG_MS) {
+      logger.warn('event_loop_lag', payload)
+    } else {
+      logger.debug('event_loop_lag', payload)
+    }
+  }
+}, EL_CHECK_MS)
 
 async function completeStartupVerification(): Promise<void> {
   const activeSessions = db.getActiveSessions()
@@ -2769,7 +2777,7 @@ async function handleCancelCopyMode(sessionId: string, ws: ServerWebSocket<WSDat
     if (session.remote && session.host) {
       await runRemoteTmux(session.host, ['send-keys', '-X', '-t', target, 'cancel'])
     } else {
-      Bun.spawnSync(['tmux', 'send-keys', '-X', '-t', target, 'cancel'], {
+      timedSpawnSync(['tmux', 'send-keys', '-X', '-t', target, 'cancel'], {
         stdout: 'pipe',
         stderr: 'pipe',
         timeout: 5000,
@@ -4367,7 +4375,7 @@ function captureTmuxHistory(target: string): string | null {
   try {
     // Capture only the visible pane so initial attach paints the current view
     // immediately instead of replaying the entire scrollback buffer.
-    const result = Bun.spawnSync(['tmux', ...withTmuxUtf8Flag([
+    const result = timedSpawnSync(['tmux', ...withTmuxUtf8Flag([
       'capture-pane',
       '-t',
       target,
@@ -4406,7 +4414,7 @@ function resizeLocalTmuxWindow(target: string, cols: number, rows: number): void
   if (safeCols === null || safeRows === null) return
 
   try {
-    const result = Bun.spawnSync([
+    const result = timedSpawnSync([
       'tmux',
       'resize-window',
       '-t',
