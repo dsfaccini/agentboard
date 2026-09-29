@@ -20,9 +20,6 @@ upstream change, or touching tmux/pty lifecycle code.
   integration tests work behind David's `sfw` package-manager proxy). A direct
   `bun test <file>` bypasses that and will hang `waitForHealth` under `sfw` —
   prefer `bun run test`, or set `NO_PROXY=localhost,127.0.0.1,::1`.
-- **Known-flaky:** `double-attach › "second terminal-attach within 500ms …"`
-  fails on a `waitForMessageQuiescence` timeout in this environment (fails the
-  same on upstream's original) — not a regression; don't chase it blind.
 
 ## Goals (in priority order)
 

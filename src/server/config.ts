@@ -155,6 +155,14 @@ const clientLogMaxBytesRaw = Number(process.env.AGENTBOARD_CLIENT_LOG_MAX_BYTES)
 const clientLogMaxBytes = Number.isFinite(clientLogMaxBytesRaw) && clientLogMaxBytesRaw > 0
   ? Math.floor(clientLogMaxBytesRaw)
   : 32 * 1024
+// Dedup window for rapid re-attaches to the same session+target. Kept
+// env-tunable so integration tests can widen it instead of racing a
+// wall-clock window against event-loop scheduling.
+const attachDedupMsRaw = Number(process.env.AGENTBOARD_ATTACH_DEDUP_MS)
+const attachDedupMs =
+  Number.isFinite(attachDedupMsRaw) && attachDedupMsRaw > 0
+    ? Math.floor(attachDedupMsRaw)
+    : 500
 
 // Bind address for the server. HOSTNAME doubles as the machine name in many
 // environments — containers and some CI images auto-export it — so a value
@@ -241,5 +249,6 @@ export const config = {
   bindTailscale,
   wsMaxPayloadBytes,
   clientLogMaxBytes,
+  attachDedupMs,
   pasteImageMaxBytes,
 }
