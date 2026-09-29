@@ -44,8 +44,10 @@ security → perf/safety → features.
 - **Local-run setup**: `launchd/`, `scripts/agentboard-control.sh`, `scripts/dev.ts`
   (replaced the `concurrently`-based dev script — see security note), `README.md`.
   The launchd wrapper runs the server from source but serves `dist/client`, so it
-  rebuilds the UI on start when client sources are newer than the bundle. Re-run
-  `launchd/install.sh` after editing the wrapper heredoc.
+  rebuilds the UI on start when client sources are newer than the bundle. It
+  runs `scripts/tmux-restore-once.sh` under `env -u NODE_ENV`: on a cold boot
+  that script starts the tmux server, whose launch env becomes every pane's.
+  Re-run `launchd/install.sh` after editing the wrapper heredoc.
 - **Dev tooling / config**: `vite.config.ts`, `package.json` (`dev`/`dev:server`/
   `dev:client` scripts, `vite ^8`, `vite-plugin-pwa ^1.3`), our `bun.lock`.
 - **Server hardening** (`src/server/index.ts`, `src/server/config.ts`): Tailscale
@@ -56,7 +58,8 @@ security → perf/safety → features.
 - **Client terminal/websocket** (`useTerminal.ts`, `useWebSocket.ts`,
   `Terminal.tsx`, `App.tsx`): array-buffer output perf, `ResizeObserver`-based
   sizing, batched scroll-wheel input, layout hardening (`min-w-0`,
-  `overflow-hidden`, `isolate`).
+  `overflow-hidden`, `isolate`). The terminal container carries both our
+  `isolate overflow-hidden` and upstream's theme `backgroundColor` (xterm 6).
 - **Hibernating-overlay fix** (`Terminal.tsx`): Tailwind `isolate` so overlay
   buttons receive clicks.
 - **Test-isolation hardening** (`src/server/__tests__/`): deterministic tmux
@@ -65,6 +68,14 @@ security → perf/safety → features.
   timeouts, and the `scripts/test-runner.ts` default-socket + tmpdir sweep backstop.
   Every tmux call aimed at an isolated `TMUX_TMPDIR` must drop an inherited
   `TMUX`: it overrides `TMUX_TMPDIR`, so a run from a tmux pane hits the live server.
+  `privateTmuxEnv()` builds such envs. The runner also gives every test process
+  a run-wide private `TMUX_TMPDIR` (`/tmp/agentboard-run-*`, killed by `-S` at
+  exit) and `AGENTBOARD_DATA_DIR` (lock + tmux pid file), so a stray tmux call
+  lands on a throwaway server. Entrypoint tests that import `index.ts` under
+  mocks await `startupReady` (`settleServerStartup`) before restoring them. e2e:
+  suite-side tmux calls use `-S` via `tests/e2e/privateTmux.ts`, teardown has no
+  shared-server fallback, and the webServer runs without the gh-gateway watchdog
+  and stuck-shell reaper.
 - **gh-gateway watchdog** (`src/server/ghGatewayWatchdog.ts`, wired in
   `index.ts`): macOS-only `setInterval` (60s) that shells out to David's
   `~/ai-coding-tools/github-graphql-proxy/scripts/gh-gateway-doctor.sh` to keep
@@ -89,17 +100,21 @@ security → perf/safety → features.
   LaunchAgent PATH must use real `~/.bun/bin/bun`, never `sfw-shims` (shim can
   exit 0 on network errors so KeepAlive won't respawn).
 - **Memory growth mitigations + sampling** (same incident class): log poller
-  age-filters history for match payloads (`getHistoryMaxAgeHours`, same as UI);
+  age-filters history for match payloads and the orphan rematch
+  (`getHistoryMaxAgeHours`, same as UI; upstream uses a fixed 72h);
   match scrollback 10k→1500 lines; prune `emptyLogCache` / `rematchAttemptCache`
-  / expired `lastUserMessageLocks`. Continuous sampler
+  / expired `lastUserMessageLocks`; cap the matcher's `zeroTokenLogCache` (2000);
+  a stalled match worker is `terminate()`d, not abandoned (upstream abandons it
+  because terminate segfaults compiled binaries; we run from source). Continuous sampler
   (`src/server/memorySampler.ts`, `GET /api/memory`, design in
   `notes/memory-sampling.md`) records a 5‑min heap/rss ring + sparse
   `memory_sample` logs so slope is visible without Activity Monitor.
 
 ## Sync state vs upstream
 
-**Synced through upstream v0.4.5** (cherry-picked onto our tree; we now report
-`version: 0.4.5`). Re-evaluate future drift with
+**Synced through upstream v0.4.5**, plus the selected later commits in the table
+below (up to `3888f43`, v0.18.0). That was a selective port, not a full sync, so
+we still report `version: 0.4.5`. Re-evaluate future drift with
 `git fetch upstream && git log --oneline master..upstream/master`.
 
 | Upstream change | Verdict / status |
@@ -115,6 +130,30 @@ security → perf/safety → features.
 | `90b1d0a` session-list layout snap (#170) | **taken (parallel)** — same idea as our `746ec57` (drop popLayout + layout springs). Did not re-cherry-pick; ours already landed. |
 | `2e6903f` dispose grouped session on attach fail (#160) | **already had** — our earlier `2c80fe3` / FORK attach-fail dispose. |
 | `f8c6bbf`→`6f7a705` CI SHA pins + Dependabot (#173–#178) | **deferred** — supply-chain hygiene for release workflows we don't run; re-evaluate when we care about GH Actions pinning. |
+| `cfc3267` tmux `-T sync` + xterm 5.5→6 | **adapted** — `tmux -V` probe cached per spawner (upstream adds a sync spawn per proxy start); deps via `bun add`. Wheel SGR batching + `!appMouseRef` gate unchanged: xterm 6 still runs `attachCustomWheelEventHandler` first on both wheel paths. |
+| `7db78c0` xterm 6 black border | **adapted** — container keeps `isolate overflow-hidden` and gains the theme `backgroundColor`. |
+| `19dc236` ambient `HOSTNAME` guard | **adapted** — placed after our auth/Tailscale config; port 47329 + README auth wording kept. |
+| `476afb9`→`05ac0d4` e2e on a private tmux server, isolated data dirs | **adapted** — suite-side tmux calls use `-S` (`tests/e2e/privateTmux.ts`, throws instead of falling back); teardown drops the shared-server fallback; webServer runs without gh-gateway watchdog + reaper. |
+| `4d2cc68` bounded session loads | **adapted** — kept our age-filtered history, not the fixed 72h; stalled worker is `terminate()`d with handlers detached, guarded by `workerTerminate.test.ts`. |
+| `de52ca7` launch env out of tmux | **adapted** — `tmuxEnv.ts` on both `runTmux`s + pty attach; launchd wrapper runs the restore under `env -u NODE_ENV`. Skipped the startup global-env scrub (fingerprint is `AGENTBOARD_STATIC_DIR`, which our launch chain never sets). |
+| `493a6d4` block input during session switches | **adapted** — kept our kill-button sizing, wheel SGR batching and `!appMouseRef` gate. |
+| `79325b7` SIGUSR1 tmux socket recovery | **adapted** — SessionManager/config only; launchd README watchdog skipped (no tmux-watchdog agent). Test runner isolates the pid file. |
+| `f63f920`→`182c4fa`→`d1b3db5` unicode input/snapshots, `convertEol: false` | **taken** — only an unrelated `c99b1ac` test hunk dropped. |
+| `15619f0`→`e7a5460` startup rematch skip; reconciliation off startup path | **adapted** — dormant candidates use our age-filtered history; `log_poll` phase timings taken. |
+| `341d296`→`bbb2634` hard agent-type gate; jumbo last-message lines | **adapted** — `AgentFamily` includes `grok`; `zeroTokenLogCache` capped; our `lastUserMessageLocks` expiry pruning kept. |
+| `f3ee4c6` no `kill-window` from background reconcile | **taken**. |
+| `7474bf5` bind HTTP before initial refresh | **taken** — plus a follow-up: entrypoint tests await `startupReady` inside their mocks (its tail ran real tmux on the default socket), and the runner's run-wide private `TMUX_TMPDIR` backstop. |
+| `9980106` real-tmux test isolation by construction | **adapted** — `privateTmuxEnv` for test envs, also in `slug-supersede`/`agb`; teardown stays on our `-S` `killTmuxServer`. |
+| `02d9a0e` stall instrumentation (non-Devin slice) | **adapted** — `timedSpawnSync`, always-on `event_loop_lag` warn, `busy_timeout=250` without WAL (`scripts/agb` reads the db from a second process; Bun's SQLite 3.51.0 predates the WAL-reset fix), escalating ws stall cooldown, aggregated `terminal_output_dropped`. Devin parts and logger flush/exit hooks skipped. |
+| `5e2d130` one tmux identity probe per refresh tick | **adapted** — no `NO_COLOR` session option here, so reconfigure covers mouse mode only. |
+| `4671d40` outlier slow spawns bypass the rate limiter | **taken**. |
+| `953ef7c` `AGENTBOARD_ATTACH_DEDUP_MS` + double-attach de-flake | **taken** — the known-flaky note is gone. |
+| `3888f43` data-dir instance lock | **adapted** — lock half only (SessionList DnD half skipped); runner + e2e set `AGENTBOARD_DATA_DIR`. |
+| `49c2882` multipart parse without `formData()` | **skipped** — patches `src/server/routes/pasteFile.ts` (device-file paste, `34d936e`), which we don't have. |
+| `1de1223` prExtractor cache cap | **skipped** — PR-chip feature not taken. |
+| `9d28d18`, Devin parts of `02d9a0e` | **skipped** — no Devin support in our tree. |
+| `9f2e4ad` iOS identical-repaint selection fix | **skipped** — patches xterm's accessibility row repaint from the client (`a11yRowStability.ts`) plus iOS-sim tooling; not taken this round. |
+| `c99b1ac` per-connection grouped sessions for external sessions | **deferred** — adds sync tmux spawns per session switch. |
 
 ### Naive-sync hazards (do NOT)
 
@@ -131,6 +170,16 @@ security → perf/safety → features.
 - **Don't drop batched wheel SGR sends** when re-merging `useTerminal` — keep
   one `terminal-input` per accum flush; only gate `requestCopyModeCheck` on
   `!appMouseRef`.
+- **Don't take upstream's fixed 72h history window** in `logPoller` — keep
+  `getHistoryMaxAgeHours` (`loadSessionRecordsForMatch` /
+  `loadDormantSessionRecords`).
+- **Don't switch `agentboard.db` to WAL** while `scripts/agb` reads it with
+  `sqlite3` from a second process: Bun's SQLite 3.51.0 predates the WAL-reset
+  race fix (3.51.3).
+- **Don't take upstream's env-only tmux calls in tests or e2e** — kill/mutate
+  by explicit `-S`; upstream's e2e teardown also falls back to the shared server.
+- **Don't let an entrypoint test restore mocks before `startupReady`** — since
+  `7474bf5` the startup refresh outlives the import.
 
 ## Watch-list (recurring concerns as we use this more)
 
@@ -150,6 +199,15 @@ security → perf/safety → features.
 - **Isolated tmux must use `-S`** — a missing `TMUX_TMPDIR` silently falls back
   to the default socket, and an inherited `TMUX` overrides `TMUX_TMPDIR`. Any
   call that can mutate or kill must target `-S <dir>/tmux-<uid>/default`.
+- **SIGUSR1 socket recovery trusts `<dataDir>/tmux-server.pid`** — when
+  `has-session` fails with a connection error, SessionManager signals the pid
+  recorded there. An instance on a different tmux socket must use its own data
+  dir (tests and e2e do), or it signals the wrong server and then refuses to
+  start a replacement.
+- **Data-dir instance lock** — `<dataDir>/server.lock` is taken over only when
+  its pid is dead; if a crashed server's pid is reused within launchd's 10s
+  throttle, the restart exits `instance_lock_held` until that pid goes away
+  (KeepAlive keeps retrying).
 - **Hot-path perf** — terminal output and input batching.
 - **Caps & auth** — keep payload/size/MIME limits when editing endpoints/WS.
 - **tmux-resurrect/continuum boot race** — agentboard's launchd job starts the
