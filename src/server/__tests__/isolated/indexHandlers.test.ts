@@ -58,7 +58,14 @@ const defaultConfig = {
   port: 47329,
   hostname: '0.0.0.0',
   hostLabel: 'test-host',
-  refreshIntervalMs: 1000,
+  // 1h: every loadIndex() re-imports index.ts, whose top-level
+  // setInterval(refreshSessions, refreshIntervalMs) is never cleared — a short
+  // interval would leave ~100 stale timers hammering the shared worker mock
+  // between baselines and assertions. (Values > 2**31-1 clamp to 1ms.)
+  refreshIntervalMs: 3_600_000,
+  // Explicit 0 (was implicitly 0 via undefined) — the Enter debounce fires on
+  // the next macrotask instead of the production 1s.
+  enterRefreshDelayMs: 0,
   tmuxSession: 'agentboard',
   discoverPrefixes: [],
   pruneWsSessions: true,
@@ -622,6 +629,16 @@ async function loadIndex() {
     serveOptions,
     registryInstance: SessionRegistryMock.instance,
     sessionManagerInstance: SessionManagerMock.instance,
+  }
+}
+
+// Poll a condition with a real ceiling instead of a fixed iteration budget —
+// a loaded CI runner can stall the event loop well past 500ms, which made the
+// previous 50x10ms / 100x5ms loops flaky.
+async function waitFor(condition: () => boolean, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (!condition() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10))
   }
 }
 
@@ -1273,9 +1290,7 @@ describe('server message handlers', () => {
 
     refreshWorkerSessions = [freshSession]
     websocket.message?.(ws as never, JSON.stringify({ type: 'session-refresh' }))
-    for (let i = 0; i < 50 && replaceSessionsCalls.length === baselineReplaceCalls; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10))
-    }
+    await waitFor(() => replaceSessionsCalls.length !== baselineReplaceCalls)
 
     expect(replaceSessionsCalls.length).toBeGreaterThan(baselineReplaceCalls)
     expect(replaceSessionsCalls.at(-1)).toEqual([freshSession])
@@ -1300,9 +1315,7 @@ describe('server message handlers', () => {
 
     refreshWorkerSessions = [baseSession]
     websocket.message?.(ws as never, JSON.stringify({ type: 'session-refresh' }))
-    for (let i = 0; i < 50 && ensureCalls === startupEnsureCalls; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10))
-    }
+    await waitFor(() => ensureCalls !== startupEnsureCalls)
 
     expect(ensureCalls).toBeGreaterThan(startupEnsureCalls)
     expect(refreshWorkerExpectedWindowCounts).toHaveLength(1)
@@ -1343,9 +1356,7 @@ describe('server message handlers', () => {
       })
     )
 
-    for (let i = 0; i < 50 && replaceSessionsCalls.length === baselineReplaceCalls; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10))
-    }
+    await waitFor(() => replaceSessionsCalls.length !== baselineReplaceCalls)
 
     expect(replaceSessionsCalls.length).toBeGreaterThan(baselineReplaceCalls)
     expect(replaceSessionsCalls.at(-1)).toEqual([refreshedSession])
@@ -2080,9 +2091,7 @@ describe('server message handlers', () => {
     const baselineReplaceCalls = replaceSessionsCalls.length
     websocket.message?.(ws as never, JSON.stringify({ type: 'session-refresh' }))
 
-    for (let i = 0; i < 100 && replaceSessionsCalls.length === baselineReplaceCalls; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-    }
+    await waitFor(() => replaceSessionsCalls.length !== baselineReplaceCalls)
 
     expect(replaceSessionsCalls.length).toBeGreaterThan(baselineReplaceCalls)
     expect(registryInstance.sessions.some((s) => s.id === createdId)).toBe(true)
@@ -2147,9 +2156,7 @@ describe('server message handlers', () => {
 
     const baselineReplaceCalls = replaceSessionsCalls.length
     websocket.message?.(ws as never, JSON.stringify({ type: 'session-refresh' }))
-    for (let i = 0; i < 100 && replaceSessionsCalls.length === baselineReplaceCalls; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-    }
+    await waitFor(() => replaceSessionsCalls.length !== baselineReplaceCalls)
 
     expect(replaceSessionsCalls.length).toBeGreaterThan(baselineReplaceCalls)
     expect(registryInstance.sessions.some((s) => s.id === remoteSession.id)).toBe(
@@ -2219,9 +2226,7 @@ describe('server message handlers', () => {
 
     const baselineReplaceCalls = replaceSessionsCalls.length
     websocket.message?.(ws as never, JSON.stringify({ type: 'session-refresh' }))
-    for (let i = 0; i < 100 && replaceSessionsCalls.length === baselineReplaceCalls; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-    }
+    await waitFor(() => replaceSessionsCalls.length !== baselineReplaceCalls)
 
     expect(replaceSessionsCalls.length).toBeGreaterThan(baselineReplaceCalls)
     expect(registryInstance.get(remoteSession.id)?.name).toBe('new-name')

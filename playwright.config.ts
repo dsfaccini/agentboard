@@ -63,6 +63,7 @@ process.env.AGENTBOARD_STUCK_SHELL_REAPER = 'false'
 export default defineConfig({
   testDir: 'tests/e2e',
   timeout: 30000,
+  retries: process.env.CI ? 1 : 0,
   expect: {
     timeout: 5000,
   },

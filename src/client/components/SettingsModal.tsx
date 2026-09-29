@@ -128,8 +128,11 @@ export default function SettingsModal({
   const [newCommand, setNewCommand] = useState('')
   const [newAgentType, setNewAgentType] = useState<'claude' | 'codex' | 'pi' | 'grok' | ''>('')
   const reenableTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const wasOpenRef = useRef(false)
 
   useEffect(() => {
+    const wasOpen = wasOpenRef.current
+    wasOpenRef.current = isOpen
     if (reenableTimeoutRef.current) {
       clearTimeout(reenableTimeoutRef.current)
       reenableTimeoutRef.current = null
@@ -179,8 +182,9 @@ export default function SettingsModal({
           textarea.setAttribute('disabled', 'true')
         }
       }
-    } else {
-      // Re-enable terminal textarea when modal closes
+    } else if (wasOpen) {
+      // Re-enable terminal textarea when modal closes — only on an actual
+      // open→closed transition, not on mount or dep changes while closed.
       if (typeof document !== 'undefined') {
         reenableTimeoutRef.current = setTimeout(() => {
           if (typeof document === 'undefined') {

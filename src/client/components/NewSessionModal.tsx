@@ -47,10 +47,13 @@ export default function NewSessionModal({
   const formRef = useRef<HTMLFormElement>(null)
   const projectPathRef = useRef<HTMLInputElement>(null)
   const defaultButtonRef = useRef<HTMLButtonElement>(null)
+  const wasOpenRef = useRef(false)
 
   const showHostPicker = remoteAllowControl && remoteHosts.length > 0
 
   useEffect(() => {
+    const wasOpen = wasOpenRef.current
+    wasOpenRef.current = isOpen
     if (!isOpen) {
       setProjectPath('')
       setName('')
@@ -58,15 +61,18 @@ export default function NewSessionModal({
       setCommand('')
       setShowBrowser(false)
       setSelectedHost(initialHost ?? '')
-      // Focus terminal after modal closes
-      setTimeout(() => {
-        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return
-        const textarea = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
-        if (textarea) {
-          textarea.removeAttribute('disabled')
-          textarea.focus()
-        }
-      }, 300)
+      // Focus terminal after modal closes — only on an actual open→closed
+      // transition, not on mount or dep changes while it stays closed.
+      if (wasOpen) {
+        setTimeout(() => {
+          if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return
+          const textarea = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+          if (textarea) {
+            textarea.removeAttribute('disabled')
+            textarea.focus()
+          }
+        }, 300)
+      }
       return
     }
     // Disable terminal textarea when modal opens to prevent keyboard capture
