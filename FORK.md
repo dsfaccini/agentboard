@@ -99,6 +99,17 @@ security → perf/safety → features.
   (sudo pfctl + verify — never a two-step gap). Ad-hoc: `agentboard recycle`.
   LaunchAgent PATH must use real `~/.bun/bin/bun`, never `sfw-shims` (shim can
   exit 0 on network errors so KeepAlive won't respawn).
+- **Async tmux on the connection paths** (`TerminalProxyBase.runTmux`,
+  `runLocalTmux` in `index.ts`): proxy start, switch and dispose, the attach
+  capture, `resize-window` and the copy-mode cancel spawn tmux with `Bun.spawn`,
+  so a slow tmux no longer stalls every client. `runTmuxSync` remains only for
+  input-ordered paths: paste and pipe-pane input. The pty proxy is created on a
+  socket's first `terminal-attach`, not in the websocket `open` handler, so an
+  abandoned socket costs no tmux work. `terminal-resize` skips an unchanged
+  size per socket. Input waits behind that socket's in-flight copy-mode cancel.
+  Client (`useWebSocket.ts`): desktop never abandons a connecting socket and
+  gives the resume verify the 10 s heartbeat window. Mobile (iOS/Android) keeps
+  the 3 s / 8 s connect timeouts and the 1.5 s verify.
 - **Memory growth mitigations + sampling** (same incident class): log poller
   age-filters history for match payloads and the orphan rematch
   (`getHistoryMaxAgeHours`, same as UI; upstream uses a fixed 72h);
@@ -180,6 +191,13 @@ we still report `version: 0.4.5`. Re-evaluate future drift with
   by explicit `-S`; upstream's e2e teardown also falls back to the shared server.
 - **Don't let an entrypoint test restore mocks before `startupReady`** — since
   `7474bf5` the startup refresh outlives the import.
+- **Don't reintroduce `Bun.spawnSync` on the connect/attach/switch/resize/close
+  paths, or proxy creation in the websocket `open` handler** — each blocks every
+  client while tmux answers, and an eager proxy turns browser connect retries
+  into tmux work plus `new-session -t` shells.
+- **Don't make paste or the copy-mode cancel fire-and-forget without ordering
+  input behind them** — a keystroke that overtakes them submits early or lands
+  in the copy-mode key table.
 
 ## Watch-list (recurring concerns as we use this more)
 
@@ -188,8 +206,14 @@ we still report `version: 0.4.5`. Re-evaluate future drift with
   test teardown, error paths in `PtyTerminalProxy.doStart`). Tests must never
   create sessions on the default socket — isolate via `TMUX_TMPDIR` and tear the
   whole isolated server down with `kill-server`. See incident below.
+- **Async proxy lifecycle races** — tmux calls in `PtyTerminalProxy` now yield,
+  so `dispose()` can run while `doStart`/`doSwitch` is mid-flight. A dispose
+  during `new-session` may kill before the session exists: `doStart` checks
+  `startAttemptId` after every await and disposes again, and disposes after a
+  failed or timed-out `new-session`. `doSwitch` must not set READY over DEAD.
+  Keep those checks when editing either method.
 - **Stuck shells from grouped sessions** — `tmux new-session -t <group>`
-  (`PtyTerminalProxy.doStart` on every websocket open, `SessionManager` group
+  (`PtyTerminalProxy.doStart` on a socket's first attach, `SessionManager` group
   recovery) spawns a throwaway default-shell window and closes its pty without
   signalling it. If the shell hasn't taken its tty yet, zsh blocks forever and
   pins a pty. Signature: `-zsh` child of the tmux server, not a pane, fds 0–2
@@ -208,7 +232,13 @@ we still report `version: 0.4.5`. Re-evaluate future drift with
   its pid is dead; if a crashed server's pid is reused within launchd's 10s
   throttle, the restart exits `instance_lock_held` until that pid goes away
   (KeepAlive keeps retrying).
-- **Hot-path perf** — terminal output and input batching.
+- **Hot-path perf** — terminal output and input batching. Remaining main-thread
+  `spawnSync`s on hot paths: the per-refresh-tick base-session probe
+  (`SessionManager.ensureSession` → `display-message`, every 2 s and after
+  Enter), `probeWindow` when a tracked window is missing from a snapshot, the
+  sync `listWindows` fallback when the refresh worker fails, paste
+  (`load-buffer` + `paste-buffer`), and all pipe-pane mode input, scroll,
+  resize and its 2 s target monitor.
 - **Caps & auth** — keep payload/size/MIME limits when editing endpoints/WS.
 - **tmux-resurrect/continuum boot race** — agentboard's launchd job starts the
   tmux server at login. If tmux-continuum's `@continuum-restore` is `on`, the
