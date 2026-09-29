@@ -170,7 +170,7 @@ afterEach(() => {
 
 describe('WebSocketManager', () => {
   test('connects and emits status updates', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => {
       statuses.push(status)
@@ -185,7 +185,7 @@ describe('WebSocketManager', () => {
   })
 
   test('delivers messages and ignores malformed payloads', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const messages: ServerMessage[] = []
     manager.subscribe((message) => messages.push(message))
 
@@ -199,7 +199,7 @@ describe('WebSocketManager', () => {
   })
 
   test('schedules reconnect on close and reconnects', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -218,7 +218,7 @@ describe('WebSocketManager', () => {
   })
 
   test('disconnect stops reconnect and marks disconnected', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -231,7 +231,7 @@ describe('WebSocketManager', () => {
   })
 
   test('send writes to open sockets only', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]
     ws?.triggerOpen()
@@ -247,7 +247,7 @@ describe('WebSocketManager', () => {
   })
 
   test('send failure destroys socket and schedules reconnect', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
     manager.connect()
@@ -264,7 +264,7 @@ describe('WebSocketManager', () => {
   })
 
   test('error events clear connect timer but let onclose handle reconnect', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: Array<{ status: string; error: string | null }> = []
     manager.subscribeStatus((status, error) => {
       statuses.push({ status, error })
@@ -292,7 +292,7 @@ describe('WebSocketManager', () => {
   })
 
   test('onerror followed by onclose produces exactly one reconnect (no double-fire)', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     let reconnectCount = 0
     manager.subscribeStatus((status) => {
       if (status === 'reconnecting') reconnectCount++
@@ -315,7 +315,7 @@ describe('WebSocketManager', () => {
 
 describe('connect timeout', () => {
   test('destroys socket and schedules reconnect if OPEN never reached', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -342,7 +342,7 @@ describe('connect timeout', () => {
   })
 
   test('reconnects if socket reports OPEN but status never became connected', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -365,7 +365,7 @@ describe('connect timeout', () => {
   })
 
   test('clears timeout when socket opens successfully', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
 
     const timeoutTimer = timers.find((t) => t.delay === 3000)
@@ -380,7 +380,7 @@ describe('connect timeout', () => {
   })
 
   test('clears timeout on error', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
 
     const timeoutTimer = timers.find((t) => t.delay === 3000)
@@ -393,7 +393,7 @@ describe('connect timeout', () => {
   })
 
   test('ignores stale timeout callback from a replaced socket', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
 
     // First connect creates ws1 + timeout1.
     manager.connect()
@@ -426,7 +426,7 @@ describe('connect timeout', () => {
 
 describe('connect() zombie socket guard', () => {
   test('destroys zombie CONNECTING socket and creates new one after debounce', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws1 = FakeWebSocket.instances[0]!
     // ws1 is stuck in CONNECTING (default readyState)
@@ -445,7 +445,7 @@ describe('connect() zombie socket guard', () => {
   })
 
   test('does not create new socket if already OPEN', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -455,7 +455,7 @@ describe('connect() zombie socket guard', () => {
   })
 
   test('destroys OPEN socket when status is desynced from connected', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -471,7 +471,7 @@ describe('connect() zombie socket guard', () => {
 
 describe('lifecycle listeners', () => {
   test('startLifecycleListeners is idempotent', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]?.triggerOpen()
 
@@ -488,7 +488,7 @@ describe('lifecycle listeners', () => {
   })
 
   test('stopLifecycleListeners cleans up and allows restart', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]?.triggerOpen()
 
@@ -508,7 +508,7 @@ describe('lifecycle listeners', () => {
   })
 
   test('stopLifecycleListeners is a no-op if not started', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     // Should not throw
     manager.stopLifecycleListeners()
     expect(intervals).toHaveLength(0)
@@ -517,7 +517,7 @@ describe('lifecycle listeners', () => {
 
 describe('forceReconnect via visibilitychange', () => {
   test('force reconnects when page becomes visible (settle delay then connect)', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -539,7 +539,7 @@ describe('forceReconnect via visibilitychange', () => {
   })
 
   test('verifies OPEN socket on resume instead of force-reconnecting', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -563,7 +563,7 @@ describe('forceReconnect via visibilitychange', () => {
   })
 
   test('verify timeout on resume triggers forceReconnect', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -588,7 +588,7 @@ describe('forceReconnect via visibilitychange', () => {
   })
 
   test('does not reconnect if manually disconnected', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -601,7 +601,7 @@ describe('forceReconnect via visibilitychange', () => {
   })
 
   test('does not fire when page becomes hidden', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -619,7 +619,7 @@ describe('forceReconnect via visibilitychange', () => {
 
 describe('forceReconnect via pageshow', () => {
   test('reconnects on bfcache restore (persisted=true) even with healthy socket', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -637,7 +637,7 @@ describe('forceReconnect via pageshow', () => {
   })
 
   test('does not reconnect on normal navigation (persisted=false)', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -652,7 +652,7 @@ describe('forceReconnect via pageshow', () => {
 
 describe('time-jump detector skips while hidden', () => {
   test('does not fire forceReconnect when page is hidden', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -672,7 +672,7 @@ describe('time-jump detector skips while hidden', () => {
 
 describe('reconnect timer cleared on hidden', () => {
   test('clears pending reconnect timer when page goes hidden', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -691,7 +691,7 @@ describe('reconnect timer cleared on hidden', () => {
 
 describe('forceReconnect via time-jump detector', () => {
   test('reconnects when time jump > 15s detected (after settle delay)', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -713,7 +713,7 @@ describe('forceReconnect via time-jump detector', () => {
   })
 
   test('does not reconnect for small time gaps', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -731,7 +731,7 @@ describe('forceReconnect via time-jump detector', () => {
 
 describe('forceReconnect resets backoff', () => {
   test('resets reconnectAttempts to 0 and cancels pending reconnect timer', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -767,7 +767,7 @@ describe('forceReconnect resets backoff', () => {
 
 describe('zombie OPEN socket detection', () => {
   test('zombie OPEN socket detected via verify timeout', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -795,7 +795,7 @@ describe('zombie OPEN socket detection', () => {
 
 describe('scheduleReconnect while hidden', () => {
   test('does not schedule timer when page is hidden', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -814,7 +814,7 @@ describe('scheduleReconnect while hidden', () => {
   })
 
   test('debounces rapid forced forceReconnect calls', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -840,7 +840,7 @@ describe('scheduleReconnect while hidden', () => {
   })
 
   test('forceReconnect on visibility resume after hidden close', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -867,7 +867,7 @@ describe('scheduleReconnect while hidden', () => {
 
 describe('heartbeat ping/pong', () => {
   test('pong receipt with matching seq clears timeout', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -898,7 +898,7 @@ describe('heartbeat ping/pong', () => {
   })
 
   test('pong with wrong seq does not clear timeout', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -918,7 +918,7 @@ describe('heartbeat ping/pong', () => {
   })
 
   test('pong without seq does not clear timeout', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -936,7 +936,7 @@ describe('heartbeat ping/pong', () => {
   })
 
   test('ping seq increments', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -959,7 +959,7 @@ describe('heartbeat ping/pong', () => {
   })
 
   test('ping send failure schedules reconnect without pong timeout', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -974,7 +974,7 @@ describe('heartbeat ping/pong', () => {
   })
 
   test('missing pong triggers destroy and reconnect', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -1008,7 +1008,7 @@ describe('heartbeat ping/pong', () => {
 
 describe('forceReconnect debounce', () => {
   test('pageshow(persisted=true) force-reconnects even during active verification', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -1032,7 +1032,7 @@ describe('forceReconnect debounce', () => {
 
 describe('lastTick normalization on resume', () => {
   test('prevents wake-check double reconnect', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -1062,7 +1062,7 @@ describe('lastTick normalization on resume', () => {
 
 describe('lastTick frozen while hidden', () => {
   test('wake-check does not update lastTick while hidden', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -1081,7 +1081,7 @@ describe('lastTick frozen while hidden', () => {
   })
 
   test('long hidden period followed by resume verifies then reconnects on timeout', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -1109,7 +1109,7 @@ describe('lastTick frozen while hidden', () => {
 
 describe('resume settle delay', () => {
   test('force reconnect with force=true schedules 750ms settle delay before connect', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
     manager.connect()
@@ -1140,7 +1140,7 @@ describe('resume settle delay', () => {
   })
 
   test('resume connect uses longer timeout (8000ms) instead of standard (3000ms)', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     FakeWebSocket.instances[0]!.triggerOpen()
     manager.startLifecycleListeners()
@@ -1165,7 +1165,7 @@ describe('resume settle delay', () => {
 
   test('hidden tab initial connect is deferred until visible', () => {
     mockVisibilityState = 'hidden'
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
     manager.startLifecycleListeners()
@@ -1184,7 +1184,7 @@ describe('resume settle delay', () => {
   })
 
   test('non-forced reconnect connects immediately without settle delay', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -1208,7 +1208,7 @@ describe('resume settle delay', () => {
 
 describe('leaked socket tracking', () => {
   test('new WebSocket is added to leakedSockets and removed on successful open', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const leaked = () => (manager as unknown as { leakedSockets: Set<unknown> }).leakedSockets
 
     manager.connect()
@@ -1225,7 +1225,7 @@ describe('leaked socket tracking', () => {
   })
 
   test('force reconnect purges leaked sockets before scheduling settle delay', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const leaked = () => (manager as unknown as { leakedSockets: Set<unknown> }).leakedSockets
 
     manager.connect()
@@ -1251,7 +1251,7 @@ describe('leaked socket tracking', () => {
   })
 
   test('purgeLeakedSockets force-closes all tracked sockets', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const leaked = () => (manager as unknown as { leakedSockets: Set<unknown> }).leakedSockets
 
     manager.connect()
@@ -1284,7 +1284,7 @@ describe('stall detection', () => {
   }
 
   test('purges leaked sockets and adds cooldown after STALL_THRESHOLD (4) consecutive failures', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
     const leaked = () => (manager as unknown as { leakedSockets: Set<unknown> }).leakedSockets
@@ -1323,7 +1323,7 @@ describe('stall detection', () => {
   })
 
   test('stall cooldown connect uses resume timeout (8000ms)', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
 
     // Drive through 4 consecutive failures to trigger stall
@@ -1371,7 +1371,7 @@ describe('stall detection', () => {
   }
 
   test('stall cooldown escalates 5s -> 10s -> 20s -> 30s cap', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
 
     expect([stallCycle(), stallCycle(), stallCycle(), stallCycle(), stallCycle()]).toEqual([
@@ -1380,7 +1380,7 @@ describe('stall detection', () => {
   })
 
   test('stall cooldown resets after a successful open', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
 
     expect(stallCycle()).toBe(5000)
@@ -1393,7 +1393,7 @@ describe('stall detection', () => {
   })
 
   test('forceReconnect resets the stall cooldown', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
 
     expect(stallCycle()).toBe(5000)
@@ -1412,7 +1412,7 @@ describe('stall detection', () => {
   })
 
   test('consecutive failures reset on successful open', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const getFailures = () =>
       (manager as unknown as { consecutiveFailures: number }).consecutiveFailures
 
@@ -1436,7 +1436,7 @@ describe('stall detection', () => {
 
 describe('verification ping on resume', () => {
   test('verify sends ping with current seq on OPEN socket', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -1455,7 +1455,7 @@ describe('verification ping on resume', () => {
   })
 
   test('pong with matching seq confirms socket and starts early heartbeat', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -1483,7 +1483,7 @@ describe('verification ping on resume', () => {
   })
 
   test('verify send failure triggers immediate forceReconnect', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -1505,7 +1505,7 @@ describe('verification ping on resume', () => {
   })
 
   test('hidden during verification cancels verify timer', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -1524,7 +1524,7 @@ describe('verification ping on resume', () => {
   })
 
   test('second verify supersedes first (idempotent)', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -1551,7 +1551,7 @@ describe('verification ping on resume', () => {
   })
 
   test('early heartbeat fires at 5s then switches to normal 20s interval', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -1579,7 +1579,7 @@ describe('verification ping on resume', () => {
   })
 
   test('non-OPEN socket on resume goes to forceReconnect (not verify)', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     manager.connect()
     const ws = FakeWebSocket.instances[0]!
     ws.triggerOpen()
@@ -1600,7 +1600,7 @@ describe('verification ping on resume', () => {
 
 describe('stale socket guards', () => {
   test('stale onopen from replaced socket is ignored', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -1625,7 +1625,7 @@ describe('stale socket guards', () => {
   })
 
   test('stale onclose from replaced socket is ignored', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const statuses: string[] = []
     manager.subscribeStatus((status) => statuses.push(status))
 
@@ -1651,7 +1651,7 @@ describe('stale socket guards', () => {
 
 describe('destroySocket re-tracks as leaked', () => {
   test('healthy socket re-added to leakedSockets when destroyed', () => {
-    const manager = new WebSocketManager()
+    const manager = new WebSocketManager({ mobile: true })
     const leaked = () => (manager as unknown as { leakedSockets: Set<unknown> }).leakedSockets
 
     manager.connect()
@@ -1666,5 +1666,75 @@ describe('destroySocket re-tracks as leaked', () => {
 
     // Socket should be re-added to leakedSockets for potential purging
     expect(leaked().has(ws)).toBe(true)
+  })
+})
+
+describe('desktop (non-mobile) tolerates a slow server', () => {
+  test('never abandons a connecting socket on a timer; reconnects on close', () => {
+    const manager = new WebSocketManager({ mobile: false })
+    manager.connect()
+    const ws = FakeWebSocket.instances[0]!
+
+    // No connect timeout of any length is armed.
+    expect(timers).toEqual([])
+
+    // The server answers late: the same socket opens.
+    ws.triggerOpen()
+    expect(manager.getStatus()).toBe('connected')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    // A close still reconnects.
+    ws.onclose?.({ code: 1006, reason: '', wasClean: false } as CloseEvent)
+    expect(manager.getStatus()).toBe('reconnecting')
+    expect(timers.some((t) => t.delay >= 1000 && t.delay <= 30000)).toBe(true)
+  })
+
+  test('resume keeps a connecting socket instead of replacing it', () => {
+    const manager = new WebSocketManager({ mobile: false })
+    manager.connect()
+    manager.startLifecycleListeners()
+    const ws = FakeWebSocket.instances[0]!
+
+    fireVisibilityChange('hidden')
+    fireVisibilityChange('visible')
+
+    // No settle-delay reconnect, no second socket.
+    expect(timers.some((t) => t.delay === 750)).toBe(false)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    ws.triggerOpen()
+    expect(manager.getStatus()).toBe('connected')
+  })
+
+  test('resume verify waits for the heartbeat pong timeout, not 1.5s', () => {
+    const manager = new WebSocketManager({ mobile: false })
+    manager.connect()
+    const ws = FakeWebSocket.instances[0]!
+    ws.triggerOpen()
+    manager.startLifecycleListeners()
+
+    fireVisibilityChange('hidden')
+    fireVisibilityChange('visible')
+
+    expect(timers.some((t) => t.delay === 1500)).toBe(false)
+    expect(timers.some((t) => t.delay === 10_000)).toBe(true)
+
+    // A slow pong still confirms the socket.
+    respondWithPong(ws)
+    expect(timers.some((t) => t.delay === 10_000)).toBe(false)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  test('resume verify still reconnects when no pong ever arrives', () => {
+    const manager = new WebSocketManager({ mobile: false })
+    manager.connect()
+    const ws = FakeWebSocket.instances[0]!
+    ws.triggerOpen()
+    manager.startLifecycleListeners()
+
+    fireVisibilityChange('hidden')
+    fireVisibilityChange('visible')
+    timers.find((t) => t.delay === 10_000)!.callback()
+
+    expect(timers.some((t) => t.delay === 750)).toBe(true)
   })
 })

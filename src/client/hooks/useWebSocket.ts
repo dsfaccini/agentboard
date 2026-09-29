@@ -20,10 +20,16 @@
  *   zombie TCP connections don't accumulate and the reconnect is more likely
  *   to succeed.
  *
+ * Desktop browsers don't suspend pages into zombie sockets, so on desktop a
+ * slow server is the likelier cause of a late open or pong. There, a
+ * connecting socket is never abandoned (reconnect only on close or error),
+ * and the resume verify waits as long as the heartbeat does. Abandoning it
+ * only queues another connection behind the stalled server.
+ *
  * Other reconnection triggers:
  * - pageshow (bfcache restore — always forces reconnect)
  * - Time-jump detector (fallback for deep PWA suspension — always forces)
- * - Connection timeout (prevents zombie sockets from blocking reconnect)
+ * - Connection timeout, mobile only (prevents zombie sockets from blocking reconnect)
  * - Application-level ping/pong heartbeat (detects dead sockets in foreground)
  * - Debounce on forceReconnect (prevents double reconnect from overlapping triggers)
  * - Leaked socket tracking (force-closes all prior sockets to avoid browser limits)
@@ -34,6 +40,7 @@ import type { ClientMessage, SendClientMessage, ServerMessage, ServerMessageWith
 import type { ConnectionStatus } from '../stores/sessionStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { clientLog } from '../utils/clientLog'
+import { isMobileDevice } from '../utils/device'
 
 type MessageListener = (message: ServerMessage) => void
 
@@ -45,7 +52,7 @@ type StatusListener = (
 
 const WS_STATES = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'] as const
 
-/** How long to wait for a WebSocket to reach OPEN before giving up. */
+/** Mobile only: how long to wait for a WebSocket to reach OPEN before giving up. */
 const CONNECT_TIMEOUT_MS = 3_000
 
 /**
@@ -77,6 +84,12 @@ const PONG_TIMEOUT_MS = 10_000
  * zombie detection feels responsive.
  */
 const VERIFY_PONG_TIMEOUT_MS = 1_500
+
+/**
+ * Desktop resume verify: no zombie sockets to catch quickly, so tolerate a
+ * slow server as long as the heartbeat does.
+ */
+const DESKTOP_VERIFY_PONG_TIMEOUT_MS = PONG_TIMEOUT_MS
 
 /**
  * After a successful verification, send the first heartbeat ping sooner than
@@ -133,6 +146,12 @@ export class WebSocketManager {
   private leakedSockets = new Set<WebSocket>()
   /** Pending verification timer — non-null while awaiting a verify pong. */
   private verifyTimer: number | null = null
+  /** Phone/tablet browser (see file header): connect timeouts and fast verify. */
+  private readonly mobile: boolean
+
+  constructor({ mobile = isMobileDevice() }: { mobile?: boolean } = {}) {
+    this.mobile = mobile
+  }
 
   private wsSnap() {
     return {
@@ -202,25 +221,29 @@ export class WebSocketManager {
       : CONNECT_TIMEOUT_MS
     this.isResumeAttempt = false
 
-    // Guard against connections that hang (common on iOS after background)
-    this.connectTimer = window.setTimeout(() => {
-      // Ignore stale timeout from an earlier socket that was already replaced.
-      if (this.ws !== ws) return
-      this.connectTimer = null
-      const isOpen = ws.readyState === WebSocket.OPEN
-      const isHealthyOpen = isOpen && this.status === 'connected'
-      if (!isHealthyOpen) {
-        clientLog('ws_connect_timeout', {
-          wsState: WS_STATES[ws.readyState],
-          managerStatus: this.status,
-          timeoutMs: timeout,
-          ...this.wsSnap(),
-        }, 'info')
-        this.consecutiveFailures += 1
-        this.destroySocket()
-        this.scheduleReconnect()
-      }
-    }, timeout)
+    // Guard against connections that hang (common on iOS after background).
+    // Desktop waits for open, close or error: a late open there means a busy
+    // server, and a replacement socket would only queue behind it.
+    if (this.mobile) {
+      this.connectTimer = window.setTimeout(() => {
+        // Ignore stale timeout from an earlier socket that was already replaced.
+        if (this.ws !== ws) return
+        this.connectTimer = null
+        const isOpen = ws.readyState === WebSocket.OPEN
+        const isHealthyOpen = isOpen && this.status === 'connected'
+        if (!isHealthyOpen) {
+          clientLog('ws_connect_timeout', {
+            wsState: WS_STATES[ws.readyState],
+            managerStatus: this.status,
+            timeoutMs: timeout,
+            ...this.wsSnap(),
+          }, 'info')
+          this.consecutiveFailures += 1
+          this.destroySocket()
+          this.scheduleReconnect()
+        }
+      }, timeout)
+    }
 
     ws.onopen = () => {
       // Guard: ignore late events from a socket that was already replaced.
@@ -415,6 +438,9 @@ export class WebSocketManager {
       // See file-level comment for the full rationale.
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.verifyConnection()
+      } else if (!this.mobile && this.ws?.readyState === WebSocket.CONNECTING) {
+        // Desktop: a connect still in flight will open, close or error.
+        clientLog('ws_resume_wait_connecting', this.wsSnap(), 'info')
       } else {
         // Socket already closed/closing/connecting — go straight to reconnect
         this.forceReconnect('visibilitychange', true)
@@ -478,7 +504,7 @@ export class WebSocketManager {
       if (this.ws !== ws) return
       clientLog('ws_verify_timeout', this.wsSnap(), 'info')
       this.forceReconnect('verify_timeout', true)
-    }, VERIFY_PONG_TIMEOUT_MS)
+    }, this.mobile ? VERIFY_PONG_TIMEOUT_MS : DESKTOP_VERIFY_PONG_TIMEOUT_MS)
   }
 
   private cancelVerify() {

@@ -4,12 +4,56 @@ import {
   isIOSDevice,
   isIOSPWA,
   isMacOS,
+  isMobileDevice,
   isSafari,
 } from '../utils/device'
 
 const globalAny = globalThis as typeof globalThis & {
   navigator?: any
 }
+
+describe('isMobileDevice', () => {
+  const withNavigator = (nav: unknown, check: () => void) => {
+    const originalNavigator = globalAny.navigator
+    try {
+      globalAny.navigator = nav
+      check()
+    } finally {
+      globalAny.navigator = originalNavigator
+    }
+  }
+
+  test('treats iOS and Android as mobile', () => {
+    withNavigator(
+      {
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)',
+        platform: 'iPhone',
+        maxTouchPoints: 5,
+      },
+      () => expect(isMobileDevice()).toBe(true)
+    )
+    withNavigator(
+      {
+        userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/126.0 Mobile Safari/537.36',
+        platform: 'Linux armv8l',
+        maxTouchPoints: 5,
+      },
+      () => expect(isMobileDevice()).toBe(true)
+    )
+  })
+
+  test('treats desktop browsers as not mobile', () => {
+    withNavigator(
+      {
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/126.0 Safari/537.36',
+        platform: 'MacIntel',
+        maxTouchPoints: 0,
+      },
+      () => expect(isMobileDevice()).toBe(false)
+    )
+    withNavigator(undefined, () => expect(isMobileDevice()).toBe(false))
+  })
+})
 
 describe('isIOSDevice', () => {
   test('returns false without navigator', () => {

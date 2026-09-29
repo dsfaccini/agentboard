@@ -13,6 +13,15 @@ export function isIOSPWA(): boolean {
   return isIOSDevice() && (navigator as { standalone?: boolean }).standalone === true
 }
 
+/**
+ * Phones and tablets. Their browsers suspend backgrounded pages, which can
+ * leave sockets that report OPEN but are dead, or connects that never finish.
+ */
+export function isMobileDevice(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return isIOSDevice() || /Android/i.test(navigator.userAgent)
+}
+
 export function isSafari(): boolean {
   if (typeof navigator === 'undefined') return false
   const ua = navigator.userAgent
