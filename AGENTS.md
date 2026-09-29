@@ -28,6 +28,7 @@ package-manager proxy (see FORK.md → How we work).
 - Single tmux session (default: `agentboard`) with one window per project
 - Backend discovers windows, streams terminal output via WebSocket
 - Parses Claude/Codex JSONL logs from `~/.claude/projects/` and `~/.codex/sessions/` for status
+- Grok CLI writes transcripts at `~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl`; sessionId and projectPath come from the directory names. Sibling telemetry files (`events.jsonl`, `updates.jsonl`) are excluded from discovery and matching.
 - Status: unknown -> working -> waiting (derived from log events)
 
 ## Structure
