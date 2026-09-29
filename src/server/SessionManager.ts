@@ -7,6 +7,7 @@ import { generateSessionName } from './nameGenerator'
 import { logger } from './logger'
 import { resolveProjectPath } from './paths'
 import { TmuxTimeoutError } from './tmuxTimeout'
+import { sanitizedTmuxEnv } from './tmuxEnv'
 import {
   BOOTSTRAP_WINDOW_COMMAND,
   BOOTSTRAP_WINDOW_NAME,
@@ -757,6 +758,10 @@ function runTmux(args: string[]): string {
     stdout: 'pipe',
     stderr: 'pipe',
     timeout,
+    // If this call boots the tmux server daemon (new-session with no server
+    // running), the daemon keeps this environment as its global environment
+    // forever and every future pane inherits it — so hand it a sanitized one.
+    env: sanitizedTmuxEnv(),
   })
   if (result.signalCode === 'SIGTERM' || result.exitCode === null) {
     throw new TmuxTimeoutError(command, timeout)

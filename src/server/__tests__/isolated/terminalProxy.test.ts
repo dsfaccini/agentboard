@@ -275,6 +275,37 @@ describe('TerminalProxy', () => {
     ])
   })
 
+  test('keeps launch-only env out of every tmux client it spawns', async () => {
+    const saved = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      const harness = createSpawnHarness()
+      const proxy = new TerminalProxy({
+        connectionId: 'env',
+        sessionName: 'agentboard-ws-env',
+        baseSession: 'agentboard',
+        onData: () => {},
+        spawn: harness.spawn,
+        spawnSync: harness.spawnSync,
+        wait: async () => {},
+      })
+      await proxy.start()
+
+      const attachEnv = harness.spawnCalls[0]?.options?.env
+      expect(attachEnv?.TERM).toBe('xterm-256color')
+      expect(attachEnv?.NODE_ENV).toBeUndefined()
+      for (const call of harness.spawnSyncCalls) {
+        expect(call.options?.env?.NODE_ENV).toBeUndefined()
+      }
+    } finally {
+      if (saved === undefined) {
+        delete process.env.NODE_ENV
+      } else {
+        process.env.NODE_ENV = saved
+      }
+    }
+  })
+
   test('probes tmux -V once per spawner, not on every attach', async () => {
     const harness = createSpawnHarness()
     for (const id of ['one', 'two']) {

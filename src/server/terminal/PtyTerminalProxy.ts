@@ -7,6 +7,7 @@ import { TerminalProxyError, TerminalState } from './types'
 import type { SpawnSyncFn } from './types'
 import { resolveGroupedSessionSwitchTarget } from './groupedSessionTarget'
 import { buildTmuxFormat, splitTmuxFields } from '../tmuxFormat'
+import { sanitizedTmuxEnv } from '../tmuxEnv'
 
 const CLIENT_TTY_FORMAT = buildTmuxFormat([
   '#{client_tty}',
@@ -250,7 +251,7 @@ class PtyTerminalProxy extends TerminalProxyBase {
         ['tmux', ...this.clientFeatureArgs(), 'attach', '-t', this.options.sessionName],
         {
           env: {
-            ...process.env,
+            ...sanitizedTmuxEnv(),
             TERM: 'xterm-256color',
           },
           terminal: {

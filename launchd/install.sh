@@ -90,7 +90,10 @@ cd "$REPO_DIR"
 # Restore saved tmux sessions before agentboard starts the server (avoids the
 # 2026-06-27 continuum-restore boot race). Requires @continuum-restore 'off' in
 # ~/.tmux.conf — see scripts/tmux-restore-once.sh for the full rationale.
-"$REPO_DIR/scripts/tmux-restore-once.sh" 2>/dev/null || true
+# On a cold boot this starts the tmux server, which keeps its launch env as the
+# global env of every future pane, so drop the server-only NODE_ENV first
+# (see src/server/tmuxEnv.ts).
+env -u NODE_ENV "$REPO_DIR/scripts/tmux-restore-once.sh" 2>/dev/null || true
 # The server runs from source but the browser loads dist/client, so rebuild the
 # UI whenever its sources are newer than the bundle. On failure, vite leaves the
 # previous bundle in place and we serve that.
