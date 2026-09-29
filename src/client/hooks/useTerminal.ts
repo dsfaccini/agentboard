@@ -327,6 +327,7 @@ export function useTerminal({
   // Wheel event handling for tmux scrollback
   const wheelAccumRef = useRef<number>(0)
   const inTmuxCopyModeRef = useRef<boolean>(false)
+  const [isTmuxCopyMode, setIsTmuxCopyMode] = useState(false)
   const appMouseRef = useRef<boolean>(false)
   const altScreenRef = useRef<boolean>(false)
   const copyModeCheckTimer = useRef<number | null>(null)
@@ -483,9 +484,9 @@ export function useTerminal({
   }, [])
 
   const setTmuxCopyMode = useCallback((nextValue: boolean) => {
-    if (nextValue && appMouseRef.current) return
     if (inTmuxCopyModeRef.current === nextValue) return
     inTmuxCopyModeRef.current = nextValue
+    setIsTmuxCopyMode(nextValue)
 
     // Disable mouse tracking when entering copy-mode so xterm.js does local selection
     // instead of generating mouse sequences. When exiting copy-mode, tmux will refresh
@@ -1247,7 +1248,7 @@ export function useTerminal({
         attachedTargetRef.current = null
         attachedConnectionEpochRef.current = -1
         focusAfterAttachSessionRef.current = null
-        inTmuxCopyModeRef.current = false
+        setTmuxCopyMode(false)
       }
       terminal.reset()
       needsResetRef.current = false
@@ -1269,7 +1270,7 @@ export function useTerminal({
         attachedTargetRef.current = null
         attachedConnectionEpochRef.current = -1
         focusAfterAttachSessionRef.current = null
-        inTmuxCopyModeRef.current = false
+        setTmuxCopyMode(false)
       }
       // Server state may have changed — all snapshots are potentially stale
       clearSnapshotCache()
@@ -1301,7 +1302,7 @@ export function useTerminal({
       attachedConnectionEpochRef.current = -1
       focusAfterAttachSessionRef.current = null
       // Reset copy-mode state - each session has its own scroll position
-      inTmuxCopyModeRef.current = false
+      setTmuxCopyMode(false)
     }
 
     // Attach to new session
@@ -1450,7 +1451,7 @@ export function useTerminal({
         attachDebounceRef.current = null
       }
     }
-  }, [sessionId, tmuxTarget, allowAttach, connectionStatus, connectionEpoch, checkScrollPosition])
+  }, [sessionId, tmuxTarget, allowAttach, connectionStatus, connectionEpoch, checkScrollPosition, setTmuxCopyMode])
 
   useEffect(() => {
     if (copyModePollIntervalRef.current !== null) {
@@ -1691,7 +1692,7 @@ export function useTerminal({
         attachedSession &&
         message.sessionId === attachedSession
       ) {
-        const nextAppMouse = message.appMouse === true
+        const nextAppMouse = message.appMouse === true && !message.inCopyMode
         const wasAppMouse = appMouseRef.current
         appMouseRef.current = nextAppMouse
         altScreenRef.current = message.altScreen === true
@@ -1700,7 +1701,7 @@ export function useTerminal({
           terminalRef.current?.write(ENABLE_MOUSE_TRACKING)
         }
 
-        setTmuxCopyMode(nextAppMouse ? false : message.inCopyMode)
+        setTmuxCopyMode(message.inCopyMode)
       }
     })
 
@@ -1825,6 +1826,7 @@ export function useTerminal({
     serializeAddonRef,
     progressAddonRef,
     inTmuxCopyModeRef,
+    isTmuxCopyMode,
     appMouseRef,
     setTmuxCopyMode,
     isSwitching,
