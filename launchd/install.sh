@@ -91,6 +91,12 @@ cd "$REPO_DIR"
 # 2026-06-27 continuum-restore boot race). Requires @continuum-restore 'off' in
 # ~/.tmux.conf — see scripts/tmux-restore-once.sh for the full rationale.
 "$REPO_DIR/scripts/tmux-restore-once.sh" 2>/dev/null || true
+# The server runs from source but the browser loads dist/client, so rebuild the
+# UI whenever its sources are newer than the bundle. On failure, vite leaves the
+# previous bundle in place and we serve that.
+if [ ! -f dist/client/index.html ] || [ -n "\$(find src/client src/shared public index.html vite.config.ts package.json bun.lock -newer dist/client/index.html -print -quit 2>/dev/null)" ]; then
+  "$BUN_PATH" --bun run build >&2 || echo "agentboard: client build failed; serving the previous bundle" >&2
+fi
 # Direct entrypoint (not \`bun run start\`) so we never re-exec via PATH shims.
 exec "$BUN_PATH" src/server/index.ts
 EOF

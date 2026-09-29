@@ -41,6 +41,9 @@ security → perf/safety → features.
 
 - **Local-run setup**: `launchd/`, `scripts/agentboard-control.sh`, `scripts/dev.ts`
   (replaced the `concurrently`-based dev script — see security note), `README.md`.
+  The launchd wrapper runs the server from source but serves `dist/client`, so it
+  rebuilds the UI on start when client sources are newer than the bundle. Re-run
+  `launchd/install.sh` after editing the wrapper heredoc.
 - **Dev tooling / config**: `vite.config.ts`, `package.json` (`dev`/`dev:server`/
   `dev:client` scripts, `vite ^8`, `vite-plugin-pwa ^1.3`), our `bun.lock`.
 - **Server hardening** (`src/server/index.ts`, `src/server/config.ts`): Tailscale
