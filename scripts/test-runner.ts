@@ -41,11 +41,15 @@ function isTestTmuxTmpDir(entryName: string): boolean {
   return TEST_TMUX_TMPDIR_PREFIXES.some((prefix) => entryName.startsWith(prefix))
 }
 
-function listTmuxSessions(env?: NodeJS.ProcessEnv): string[] {
+function isolatedTmuxSocket(tmuxTmpDir: string): string {
+  return path.join(tmuxTmpDir, `tmux-${os.userInfo().uid}`, 'default')
+}
+
+function listTmuxSessions(socketArgs: string[] = []): string[] {
   try {
     const result = Bun.spawnSync(
-      ['tmux', 'list-sessions', '-F', '#{session_name}'],
-      { stdout: 'pipe', stderr: 'ignore', env, timeout: 5000 }
+      ['tmux', ...socketArgs, 'list-sessions', '-F', '#{session_name}'],
+      { stdout: 'pipe', stderr: 'ignore', timeout: 5000 }
     )
     if (result.exitCode !== 0) {
       return []
@@ -60,12 +64,11 @@ function listTmuxSessions(env?: NodeJS.ProcessEnv): string[] {
   }
 }
 
-function killTmuxSession(sessionName: string, env?: NodeJS.ProcessEnv): void {
+function killTmuxSession(sessionName: string, socketArgs: string[] = []): void {
   try {
-    Bun.spawnSync(['tmux', 'kill-session', '-t', sessionName], {
+    Bun.spawnSync(['tmux', ...socketArgs, 'kill-session', '-t', sessionName], {
       stdout: 'ignore',
       stderr: 'ignore',
-      env,
       timeout: 5000,
     })
   } catch {
@@ -82,15 +85,12 @@ function cleanupDefaultTmuxSessions(): void {
 }
 
 function cleanupTmuxTmpDir(tmuxTmpDir: string): void {
-  const env = {
-    ...process.env,
-    TMUX_TMPDIR: tmuxTmpDir,
-  }
-  // An inherited $TMUX (runner started from a tmux pane) overrides TMUX_TMPDIR
-  // and would point list/kill at the live server, killing every real session.
-  delete env.TMUX
-  for (const sessionName of listTmuxSessions(env)) {
-    killTmuxSession(sessionName, env)
+  // Address the isolated server by explicit socket, never via TMUX_TMPDIR: an
+  // inherited $TMUX overrides TMUX_TMPDIR, and a missing TMUX_TMPDIR falls back
+  // to the default socket. Either way list/kill would hit the live server.
+  const socketArgs = ['-S', isolatedTmuxSocket(tmuxTmpDir)]
+  for (const sessionName of listTmuxSessions(socketArgs)) {
+    killTmuxSession(sessionName, socketArgs)
   }
   fs.rmSync(tmuxTmpDir, { recursive: true, force: true })
 }

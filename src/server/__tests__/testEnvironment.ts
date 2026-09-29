@@ -41,13 +41,6 @@ export function createTmuxTmpDir(prefix = 'agentboard-tmux-'): string {
 }
 
 /**
- * Tear down the entire isolated tmux server living in `tmuxTmpDir`. Unlike
- * `kill-session` on the base session, this also kills server-spawned grouped
- * `…-ws-<uuid>` sessions and the daemonized tmux server process itself, so no
- * pty-holding session survives the test. The socket is bound to `tmuxTmpDir`,
- * so this can never touch the developer's default tmux server.
- */
-/**
  * Stop a spawned process deterministically: SIGTERM, then escalate to SIGKILL
  * if it doesn't exit within `timeoutMs`. Avoids an unbounded `await
  * proc.exited` when the process's graceful-shutdown handler stalls.
@@ -77,16 +70,22 @@ export async function shutdownProcess(
   }
 }
 
+/**
+ * Tear down the entire isolated tmux server living in `tmuxTmpDir`. Unlike
+ * `kill-session` on the base session, this also kills server-spawned grouped
+ * `…-ws-<uuid>` sessions and the daemonized tmux server process itself, so no
+ * pty-holding session survives the test.
+ *
+ * Targets the socket explicitly with `-S`. Never go through TMUX_TMPDIR here:
+ * an inherited $TMUX overrides it, and a missing TMUX_TMPDIR falls back to the
+ * default socket, so kill-server would take down the developer's live server.
+ */
 export function killTmuxServer(tmuxTmpDir: string): void {
-  // Never rely on createTmuxTmpDir having cleared TMUX earlier: an inherited
-  // $TMUX overrides TMUX_TMPDIR and kill-server would take down the live server.
-  const env: NodeJS.ProcessEnv = { ...process.env, TMUX_TMPDIR: tmuxTmpDir }
-  delete env.TMUX
+  const socket = path.join(tmuxTmpDir, `tmux-${os.userInfo().uid}`, 'default')
   try {
-    Bun.spawnSync(['tmux', 'kill-server'], {
+    Bun.spawnSync(['tmux', '-S', socket, 'kill-server'], {
       stdout: 'ignore',
       stderr: 'ignore',
-      env,
       // Bound the call so a wedged tmux server can't hang teardown.
       timeout: 5000,
     })
