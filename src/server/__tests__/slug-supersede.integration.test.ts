@@ -144,6 +144,7 @@ if (!tmuxAvailable || !localhostBindable) {
       port = await getFreePort()
       const codexDir = createAgentHomeDir('agentboard-codex-')
       const piDir = createAgentHomeDir('agentboard-pi-')
+      const grokDir = createAgentHomeDir('agentboard-grok-')
       const env: NodeJS.ProcessEnv = {
         ...privateTmuxEnv(tmuxTmpDir),
         PORT: String(port),
@@ -154,6 +155,7 @@ if (!tmuxAvailable || !localhostBindable) {
         CLAUDE_CONFIG_DIR: claudeConfigDir,
         CODEX_HOME: codexDir,
         PI_HOME: piDir,
+        GROK_HOME: grokDir,
         TERMINAL_MODE: 'pty',
       }
       if (tmuxTmpDir) {
@@ -382,6 +384,7 @@ if (!tmuxAvailable || !localhostBindable) {
         port = await getFreePort()
         const codexDir = createAgentHomeDir('agentboard-codex-')
         const piDir = createAgentHomeDir('agentboard-pi-')
+        const grokDir = createAgentHomeDir('agentboard-grok-')
         const env: NodeJS.ProcessEnv = {
           ...privateTmuxEnv(tmuxTmpDir),
           PORT: String(port),
@@ -392,6 +395,7 @@ if (!tmuxAvailable || !localhostBindable) {
           CLAUDE_CONFIG_DIR: claudeConfigDir!,
           CODEX_HOME: codexDir,
           PI_HOME: piDir,
+          GROK_HOME: grokDir,
           TERMINAL_MODE: 'pty',
         }
         if (tmuxTmpDir) {

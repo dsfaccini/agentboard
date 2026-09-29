@@ -23,6 +23,7 @@ const ORIGINAL_ENV = {
   CLAUDE_RESUME_CMD: process.env.CLAUDE_RESUME_CMD,
   CODEX_RESUME_CMD: process.env.CODEX_RESUME_CMD,
   PI_RESUME_CMD: process.env.PI_RESUME_CMD,
+  GROK_RESUME_CMD: process.env.GROK_RESUME_CMD,
   AGENTBOARD_HOST: process.env.AGENTBOARD_HOST,
   AGENTBOARD_REMOTE_HOSTS: process.env.AGENTBOARD_REMOTE_HOSTS,
   AGENTBOARD_REMOTE_POLL_MS: process.env.AGENTBOARD_REMOTE_POLL_MS,
@@ -72,6 +73,7 @@ async function loadConfig(tag: string) {
     claudeResumeCmd: string
     codexResumeCmd: string
     piResumeCmd: string
+    grokResumeCmd: string
     hostLabel: string
     remoteHosts: string[]
     remotePollMs: number
@@ -114,6 +116,7 @@ describe('config', () => {
     expect(config.claudeResumeCmd).toBe('claude --resume {sessionId}')
     expect(config.codexResumeCmd).toBe('codex resume {sessionId}')
     expect(config.piResumeCmd).toBe('pi --session {logFilePath}')
+    expect(config.grokResumeCmd).toBe('grok --resume {sessionId}')
     expect(config.hostLabel).toBe(os.hostname())
     expect(config.remoteHosts).toEqual([])
     expect(config.remotePollMs).toBe(2000)

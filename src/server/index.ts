@@ -3529,6 +3529,9 @@ function getResumeCommandTemplate(agentType: AgentType): string {
   if (agentType === 'pi') {
     return config.piResumeCmd
   }
+  if (agentType === 'grok') {
+    return config.grokResumeCmd
+  }
   return config.codexResumeCmd
 }
 

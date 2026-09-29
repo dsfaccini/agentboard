@@ -35,6 +35,7 @@ let tempRoot: string
 const originalClaude = process.env.CLAUDE_CONFIG_DIR
 const originalCodex = process.env.CODEX_HOME
 const originalPi = process.env.PI_HOME
+const originalGrok = process.env.GROK_HOME
 
 function setTmuxOutput(target: string, content: string) {
   tmuxOutputs.set(target, content)
@@ -225,6 +226,7 @@ beforeEach(async () => {
   process.env.CLAUDE_CONFIG_DIR = path.join(tempRoot, 'claude')
   process.env.CODEX_HOME = path.join(tempRoot, 'codex')
   process.env.PI_HOME = path.join(tempRoot, 'pi')
+  process.env.GROK_HOME = path.join(tempRoot, 'grok')
 
   bunAny.spawnSync = ((args: string[]) => {
     const tmuxSubcommand = args[1] === '-u' ? args[2] : args[1]
@@ -258,6 +260,8 @@ afterEach(async () => {
   else delete process.env.CODEX_HOME
   if (originalPi) process.env.PI_HOME = originalPi
   else delete process.env.PI_HOME
+  if (originalGrok) process.env.GROK_HOME = originalGrok
+  else delete process.env.GROK_HOME
   await fs.rm(tempRoot, { recursive: true, force: true })
 })
 

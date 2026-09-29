@@ -8,6 +8,7 @@ import {
   inferAgentTypeFromPath,
   isCodexExec,
   isCodexSubagent,
+  isGrokTelemetryFile,
 } from './logDiscovery'
 import {
   DEFAULT_SCROLLBACK_LINES,
@@ -61,6 +62,9 @@ export function handleMatchWorkerRequest(
       // We only accept jsonl paths under known log roots.
       const validPaths = payload.preFilteredPaths.filter((filePath) => {
         if (!filePath.endsWith('.jsonl')) return false
+        // Grok telemetry siblings share the transcript's session id; ingesting
+        // them would overwrite its last_known_log_size and last_activity_at.
+        if (isGrokTelemetryFile(filePath)) return false
         const resolvedPath = path.resolve(filePath)
         return normalizedLogDirs.some((logDir) => {
           const root = logDir.endsWith(path.sep) ? logDir : `${logDir}${path.sep}`

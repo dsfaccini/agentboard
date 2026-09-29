@@ -16,6 +16,7 @@ const tmuxOutputs = new Map<string, string>()
 const originalClaude = process.env.CLAUDE_CONFIG_DIR
 const originalCodex = process.env.CODEX_HOME
 const originalPi = process.env.PI_HOME
+const originalGrok = process.env.GROK_HOME
 
 let tempRoot = ''
 
@@ -143,6 +144,8 @@ afterAll(() => {
   else delete process.env.CODEX_HOME
   if (originalPi) process.env.PI_HOME = originalPi
   else delete process.env.PI_HOME
+  if (originalGrok) process.env.GROK_HOME = originalGrok
+  else delete process.env.GROK_HOME
 })
 
 beforeEach(async () => {
@@ -153,6 +156,7 @@ beforeEach(async () => {
   process.env.CLAUDE_CONFIG_DIR = path.join(tempRoot, 'claude')
   process.env.CODEX_HOME = path.join(tempRoot, 'codex')
   process.env.PI_HOME = path.join(tempRoot, 'pi')
+  process.env.GROK_HOME = path.join(tempRoot, 'grok')
   await fs.mkdir(path.join(process.env.CLAUDE_CONFIG_DIR, 'projects'), {
     recursive: true,
   })
@@ -198,6 +202,8 @@ afterEach(async () => {
   else delete process.env.CODEX_HOME
   if (originalPi) process.env.PI_HOME = originalPi
   else delete process.env.PI_HOME
+  if (originalGrok) process.env.GROK_HOME = originalGrok
+  else delete process.env.GROK_HOME
 })
 
 const baseSession: Session = {
@@ -338,6 +344,44 @@ describe('logMatchWorker', () => {
     const entries = response.entries as Array<{ logPath: string }>
     expect(entries).toHaveLength(1)
     expect(entries[0]?.logPath).toBe(includedLogPath)
+  })
+
+  test('ignores Grok telemetry siblings in preFilteredPaths', async () => {
+    const sessionDir = path.join(
+      process.env.GROK_HOME as string,
+      'sessions',
+      encodeURIComponent('/tmp/alpha'),
+      'grok-session-1'
+    )
+    await fs.mkdir(sessionDir, { recursive: true })
+    const transcript = path.join(sessionDir, 'chat_history.jsonl')
+    const telemetry = ['events.jsonl', 'updates.jsonl'].map((name) =>
+      path.join(sessionDir, name)
+    )
+    const line =
+      JSON.stringify({
+        type: 'user',
+        prompt_index: 0,
+        content: [{ type: 'text', text: '<user_query>hi</user_query>' }],
+      }) + '\n'
+    for (const file of [transcript, ...telemetry]) {
+      await fs.writeFile(file, line)
+    }
+
+    postRequest({
+      id: 'request-grok-telemetry',
+      windows: [],
+      maxLogsPerPoll: 25,
+      sessions: [],
+      scrollbackLines: 25,
+      preFilteredPaths: [...telemetry, transcript],
+    })
+
+    expect(messages).toHaveLength(1)
+    const response = messages[0] as Record<string, unknown>
+    expect(response.type).toBe('result')
+    const entries = response.entries as Array<{ logPath: string }>
+    expect(entries.map((entry) => entry.logPath)).toEqual([transcript])
   })
 
   test('falls back to full scan when preFilteredPaths is empty', async () => {

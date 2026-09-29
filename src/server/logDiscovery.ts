@@ -67,11 +67,23 @@ function getPiHomeDir(): string {
   return path.join(getHomeDir(), '.pi')
 }
 
+const GROK_TRANSCRIPT_FILE = 'chat_history.jsonl'
+
+function getGrokHomeDir(): string {
+  const override = process.env.GROK_HOME
+  if (override && override.trim()) {
+    const normalized = normalizeProjectPath(override)
+    return normalized || override.trim()
+  }
+  return path.join(getHomeDir(), '.grok')
+}
+
 export function getLogSearchDirs(): string[] {
   return [
     path.join(getClaudeConfigDir(), 'projects'),
     path.join(getCodexHomeDir(), 'sessions'),
     path.join(getPiHomeDir(), 'agent', 'sessions'),
+    path.join(getGrokHomeDir(), 'sessions'),
   ]
 }
 
@@ -80,6 +92,7 @@ export function getLogWatchParentDirs(): string[] {
     getClaudeConfigDir(),
     getCodexHomeDir(),
     path.join(getPiHomeDir(), 'agent'),
+    getGrokHomeDir(),
   ]
 }
 
@@ -113,15 +126,57 @@ export function scanAllLogDirs(): string[] {
   const claudeRoot = path.join(getClaudeConfigDir(), 'projects')
   const codexRoot = path.join(getCodexHomeDir(), 'sessions')
   const piRoot = path.join(getPiHomeDir(), 'agent', 'sessions')
+  const grokRoot = path.join(getGrokHomeDir(), 'sessions')
 
   paths.push(...scanDirForJsonl(claudeRoot, 3))
   paths.push(...scanDirForJsonl(codexRoot, 4))
   paths.push(...scanDirForJsonl(piRoot, 4))
+  // Grok Build writes sessions/<encoded-cwd>/<session-id>/chat_history.jsonl
+  // alongside sibling telemetry files (events.jsonl, updates.jsonl, ...) that
+  // are not transcripts, so only the transcript file is collected.
+  paths.push(...scanDirForJsonl(grokRoot, 3, GROK_TRANSCRIPT_FILE))
 
   return paths
 }
 
+/**
+ * Grok session directories hold sibling telemetry files (events.jsonl,
+ * updates.jsonl, rewind_points.jsonl) that echo the prompt text and share the
+ * transcript's path-derived session id; only chat_history.jsonl is a
+ * transcript.
+ */
+export function isGrokTelemetryFile(logPath: string): boolean {
+  return (
+    inferAgentTypeFromPath(logPath) === 'grok' &&
+    path.basename(logPath) !== GROK_TRANSCRIPT_FILE
+  )
+}
+
+/**
+ * Grok transcripts live at sessions/<encoded-cwd>/<session-id>/chat_history.jsonl
+ * and carry no session-id field, so both are derived from the path.
+ */
+function grokSessionIdFromPath(logPath: string): string | null {
+  const sessionDir = path.basename(path.dirname(logPath))
+  return sessionDir || null
+}
+
+function grokProjectPathFromPath(logPath: string): string | null {
+  const encodedCwd = path.basename(path.dirname(path.dirname(logPath)))
+  if (!encodedCwd) return null
+  try {
+    const decoded = decodeURIComponent(encodedCwd)
+    return normalizeProjectPath(decoded) || null
+  } catch {
+    return null
+  }
+}
+
 export function extractSessionId(logPath: string): string | null {
+  if (inferAgentTypeFromPath(logPath) === 'grok') {
+    return grokSessionIdFromPath(logPath)
+  }
+
   const entries = parseLogHeadEntries(logPath)
 
   for (const entry of entries) {
@@ -145,6 +200,10 @@ export function extractSlug(logPath: string): string | null {
 }
 
 export function extractProjectPath(logPath: string): string | null {
+  if (inferAgentTypeFromPath(logPath) === 'grok') {
+    return grokProjectPathFromPath(logPath)
+  }
+
   const entries = parseLogHeadEntries(logPath)
 
   for (const entry of entries) {
@@ -183,24 +242,29 @@ export function getLogTimes(
   }
 }
 
-export function inferAgentTypeFromPath(logPath: string): 'claude' | 'codex' | 'pi' | null {
+export function inferAgentTypeFromPath(
+  logPath: string
+): 'claude' | 'codex' | 'pi' | 'grok' | null {
   const normalized = path.resolve(logPath)
   const claudeRoot = path.resolve(getClaudeConfigDir())
   const codexRoot = path.resolve(getCodexHomeDir())
   const piRoot = path.resolve(getPiHomeDir())
+  const grokRoot = path.resolve(getGrokHomeDir())
 
   if (normalized.startsWith(claudeRoot + path.sep)) return 'claude'
   if (normalized.startsWith(codexRoot + path.sep)) return 'codex'
   if (normalized.startsWith(piRoot + path.sep)) return 'pi'
+  if (normalized.startsWith(grokRoot + path.sep)) return 'grok'
 
   const fallback = logPath.replace(/\\/g, '/')
   if (fallback.includes('/.claude/')) return 'claude'
   if (fallback.includes('/.codex/')) return 'codex'
   if (fallback.includes('/.pi/')) return 'pi'
+  if (fallback.includes('/.grok/')) return 'grok'
   return null
 }
 
-function scanDirForJsonl(root: string, maxDepth: number): string[] {
+function scanDirForJsonl(root: string, maxDepth: number, fileName?: string): string[] {
   if (!root) return []
   if (!fs.existsSync(root)) return []
 
@@ -235,7 +299,11 @@ function scanDirForJsonl(root: string, maxDepth: number): string[] {
         continue
       }
 
-      if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      if (
+        entry.isFile() &&
+        entry.name.endsWith('.jsonl') &&
+        (!fileName || entry.name === fileName)
+      ) {
         results.push(fullPath)
       }
     }

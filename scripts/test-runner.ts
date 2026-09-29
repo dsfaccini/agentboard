@@ -30,9 +30,13 @@ function createTempLogDirs() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentboard-tests-'))
   const claudeDir = path.join(tempRoot, 'claude')
   const codexDir = path.join(tempRoot, 'codex')
+  const piDir = path.join(tempRoot, 'pi')
+  const grokDir = path.join(tempRoot, 'grok')
   fs.mkdirSync(path.join(claudeDir, 'projects'), { recursive: true })
   fs.mkdirSync(path.join(codexDir, 'sessions'), { recursive: true })
-  return { tempRoot, claudeDir, codexDir }
+  fs.mkdirSync(path.join(piDir, 'agent', 'sessions'), { recursive: true })
+  fs.mkdirSync(path.join(grokDir, 'sessions'), { recursive: true })
+  return { tempRoot, claudeDir, codexDir, piDir, grokDir }
 }
 
 function isTestTmuxSession(sessionName: string): boolean {
@@ -178,7 +182,7 @@ process.on('SIGTERM', () => {
 })
 
 async function main() {
-  const { tempRoot, claudeDir, codexDir } = createTempLogDirs()
+  const { tempRoot, claudeDir, codexDir, piDir, grokDir } = createTempLogDirs()
   // A private tmux dir for every test process. Integration tests pin their
   // own TMUX_TMPDIR; this one catches any other tmux call that would fall back
   // to the default socket, i.e. the developer's live server (e.g. an async
@@ -198,6 +202,8 @@ async function main() {
     NODE_ENV: process.env.NODE_ENV === 'production' ? 'test' : (process.env.NODE_ENV || 'test'),
     CLAUDE_CONFIG_DIR: claudeDir,
     CODEX_HOME: codexDir,
+    PI_HOME: piDir,
+    GROK_HOME: grokDir,
     LOG_FILE: tempLogFile,
     AGENTBOARD_DB_PATH: tempDbPath,
     // Test servers get their own data dir: the single-instance lock

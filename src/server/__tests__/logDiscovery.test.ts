@@ -20,6 +20,7 @@ let piDir: string
 const originalClaude = process.env.CLAUDE_CONFIG_DIR
 const originalCodex = process.env.CODEX_HOME
 const originalPi = process.env.PI_HOME
+const originalGrok = process.env.GROK_HOME
 
 beforeEach(async () => {
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agentboard-logs-'))
@@ -29,6 +30,7 @@ beforeEach(async () => {
   process.env.CLAUDE_CONFIG_DIR = claudeDir
   process.env.CODEX_HOME = codexDir
   process.env.PI_HOME = piDir
+  process.env.GROK_HOME = path.join(tempRoot, 'grok')
 })
 
 afterEach(async () => {
@@ -38,6 +40,8 @@ afterEach(async () => {
   else delete process.env.CODEX_HOME
   if (originalPi) process.env.PI_HOME = originalPi
   else delete process.env.PI_HOME
+  if (originalGrok) process.env.GROK_HOME = originalGrok
+  else delete process.env.GROK_HOME
   await fs.rm(tempRoot, { recursive: true, force: true })
 })
 
@@ -111,6 +115,35 @@ describe('log discovery', () => {
 
     expect(extractSessionId(logPath)).toBe('codex-session-456')
     expect(extractProjectPath(logPath)).toBe('/Users/example/codex-project')
+  })
+
+  test('discovers Grok transcripts and derives id/project from path', async () => {
+    const sessionDir = path.join(
+      process.env.GROK_HOME!,
+      'sessions',
+      encodeURIComponent('/Users/example/grok-proj'),
+      'grok-session-789'
+    )
+    await fs.mkdir(sessionDir, { recursive: true })
+    const log = path.join(sessionDir, 'chat_history.jsonl')
+    await fs.writeFile(
+      log,
+      JSON.stringify({
+        type: 'user',
+        prompt_index: 0,
+        content: [{ type: 'text', text: '<user_query>hi</user_query>' }],
+      }) + '\n'
+    )
+    // Sibling telemetry files are not transcripts and must be ignored.
+    const telemetry = path.join(sessionDir, 'events.jsonl')
+    await fs.writeFile(telemetry, '{"ts":"x","type":"loop_started"}\n')
+
+    const found = scanAllLogDirs()
+    expect(found).toContain(log)
+    expect(found).not.toContain(telemetry)
+
+    expect(extractSessionId(log)).toBe('grok-session-789')
+    expect(extractProjectPath(log)).toBe('/Users/example/grok-proj')
   })
 
   test('expands tilde overrides for log roots', () => {

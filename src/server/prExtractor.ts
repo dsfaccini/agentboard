@@ -45,7 +45,7 @@ const GH_PR_CREATE_LINE_RE =
 // the other agents — no blanket per-agent match (which would make every
 // line in a mirrored devin log qualify, prose and tool output included).
 const TOOL_CALL_LINE_RE =
-  /"tool_use"|"function_call"|"custom_tool_call"|"toolCalls?"/
+  /"tool_use"|"function_call"|"custom_tool_call"|"toolCalls?"|"tool_calls"/
 const PR_URL_RE =
   /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/g
 // Result markers only — "call_id" alone also appears on function_call lines.
@@ -162,6 +162,23 @@ function extractToolCallIds(line: string): string[] | null {
     for (const call of toolCalls) {
       if (!call || typeof call.id !== 'string' || !call.id) continue
       const cmd = commandTextFromArgs(call.arguments)
+      if (cmd !== null && GH_PR_CREATE_RE.test(cmd)) {
+        ids.push(call.id)
+      }
+    }
+  }
+
+  // Grok: top-level tool_calls[] entries of shape {id, name, arguments}
+  // (arguments is a JSON string; results arrive as type 'tool_result' lines
+  // carrying tool_call_id).
+  const grokToolCalls = entry.tool_calls
+  if (Array.isArray(grokToolCalls)) {
+    recognized = true
+    for (const call of grokToolCalls) {
+      if (!call || typeof call.id !== 'string' || !call.id) continue
+      const cmd = commandTextFromArgs(
+        (call as Record<string, unknown>).arguments
+      )
       if (cmd !== null && GH_PR_CREATE_RE.test(cmd)) {
         ids.push(call.id)
       }

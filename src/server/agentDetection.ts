@@ -143,7 +143,7 @@ export function inferAgentType(command: string): AgentType | undefined {
     if (baseName === 'pi') {
       return 'pi'
     }
-    if (baseName === 'grok') {
+    if (baseName === 'grok' || baseName.startsWith('grok-')) {
       return 'grok'
     }
 

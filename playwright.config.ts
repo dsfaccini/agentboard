@@ -39,9 +39,11 @@ delete process.env.TMUX
 const claudeDir = join(tmuxTmpDir, 'claude')
 const codexDir = join(tmuxTmpDir, 'codex')
 const piDir = join(tmuxTmpDir, 'pi')
+const grokDir = join(tmuxTmpDir, 'grok')
 mkdirSync(claudeDir, { recursive: true })
 mkdirSync(codexDir, { recursive: true })
 mkdirSync(piDir, { recursive: true })
+mkdirSync(grokDir, { recursive: true })
 process.env.AGENTBOARD_DB_PATH = `${tmuxTmpDir}/agentboard.db`
 process.env.LOG_FILE = `${tmuxTmpDir}/agentboard.log`
 process.env.AGENTBOARD_TMUX_PID_FILE = `${tmuxTmpDir}/tmux-server.pid`
@@ -51,6 +53,7 @@ process.env.AGENTBOARD_DATA_DIR = tmuxTmpDir
 process.env.CLAUDE_CONFIG_DIR = claudeDir
 process.env.CODEX_HOME = codexDir
 process.env.PI_HOME = piDir
+process.env.GROK_HOME = grokDir
 // Fork-only background jobs reach outside this run: the gh-gateway watchdog
 // drives the machine's GitHub proxy, and the stuck-shell reaper signals
 // processes. The throwaway webServer needs neither.

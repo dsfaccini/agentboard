@@ -229,6 +229,7 @@ export const config = {
   claudeResumeCmd: process.env.CLAUDE_RESUME_CMD || 'claude --resume {sessionId}',
   codexResumeCmd: process.env.CODEX_RESUME_CMD || 'codex resume {sessionId}',
   piResumeCmd: process.env.PI_RESUME_CMD || 'pi --session {logFilePath}',
+  grokResumeCmd: process.env.GROK_RESUME_CMD || 'grok --resume {sessionId}',
   enterRefreshDelayMs,
   workingGracePeriodMs,
   historySessionMaxAgeHours,
