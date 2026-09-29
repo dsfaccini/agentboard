@@ -2267,12 +2267,16 @@ function parseTmuxBufferSummaries(output: string): TmuxBufferSummary[] {
 }
 
 /**
- * Run a read-only tmux command without blocking the event loop. The clipboard
- * watch polls on a 750ms timer, so using the synchronous Bun.spawnSync here
- * would stall terminal streaming for every session on each tick (up to
- * tmuxTimeoutMs if tmux is slow). Bun.spawn keeps it off the JS thread.
+ * Run a tmux command on the local server without blocking the event loop.
+ * Resolves with stdout, or null when tmux fails or times out. Attach, resize,
+ * copy-mode and clipboard-poll calls come through here: a synchronous
+ * Bun.spawnSync would stall terminal streaming for every session while tmux
+ * answers (seconds under memory pressure).
  */
-async function readTmuxCapture(tmuxArgs: string[]): Promise<string | null> {
+async function runLocalTmux(
+  tmuxArgs: string[],
+  timeoutMs = config.tmuxTimeoutMs
+): Promise<string | null> {
   // Belt-and-suspenders timeout: don't rely solely on Bun.spawn's `timeout`
   // option. Guarantee the process is killed (and thus `exited`/stdout resolve)
   // so a hung tmux can never leave clipboardPollInFlight stuck forever.
@@ -2284,7 +2288,7 @@ async function readTmuxCapture(tmuxArgs: string[]): Promise<string | null> {
       // Ignore stderr rather than piping it: we never read it, and an
       // undrained pipe could fill its OS buffer and block the process exit.
       stderr: 'ignore',
-      timeout: config.tmuxTimeoutMs,
+      timeout: timeoutMs,
       killSignal: 'SIGKILL',
     })
     kill = () => {
@@ -2294,7 +2298,7 @@ async function readTmuxCapture(tmuxArgs: string[]): Promise<string | null> {
         // already exited
       }
     }
-    killTimer = setTimeout(kill, config.tmuxTimeoutMs + 250)
+    killTimer = setTimeout(kill, timeoutMs + 250)
     const [stdout, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),
       proc.exited,
@@ -2310,7 +2314,7 @@ async function readTmuxCapture(tmuxArgs: string[]): Promise<string | null> {
 }
 
 async function readLatestTmuxBufferSummary(): Promise<TmuxBufferSummary | null> {
-  const stdout = await readTmuxCapture([
+  const stdout = await runLocalTmux([
     'list-buffers',
     '-F',
     buildTmuxFormat(['#{buffer_name}', '#{buffer_created}', '#{buffer_size}']),
@@ -2323,7 +2327,7 @@ async function readTmuxBufferText(summary: TmuxBufferSummary): Promise<string | 
   if (summary.size <= 0 || summary.size > CLIPBOARD_BUFFER_MAX_BYTES) {
     return null
   }
-  const text = await readTmuxCapture(['show-buffer', '-b', summary.name])
+  const text = await runLocalTmux(['show-buffer', '-b', summary.name])
   if (text === null) return null
   return text.trim() ? text : null
 }
@@ -2789,26 +2793,57 @@ async function handleRemoteCreate(
   }
 }
 
+// The client sends tmux-cancel-copy-mode right before the keystroke or paste
+// that ended scrolling. Input that reaches the pane while copy-mode is still
+// on is read by the copy-mode key table, so a socket's input waits behind its
+// in-flight cancel (and behind input already queued there).
+const inputAfterCopyModeCancel = new WeakMap<ServerWebSocket<WSData>, Promise<void>>()
+
+function queueBehindCopyModeCancel(
+  ws: ServerWebSocket<WSData>,
+  step: () => unknown
+): Promise<void> {
+  const previous = inputAfterCopyModeCancel.get(ws)
+  const next = (previous ?? Promise.resolve())
+    .then(step)
+    .then(
+      () => {},
+      (error) => {
+        logger.debug('terminal_input_after_cancel_failed', {
+          connectionId: ws.data.connectionId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    )
+  inputAfterCopyModeCancel.set(ws, next)
+  void next.then(() => {
+    if (inputAfterCopyModeCancel.get(ws) === next) {
+      inputAfterCopyModeCancel.delete(ws)
+    }
+  })
+  return next
+}
+
+function deliverTerminalInput(ws: ServerWebSocket<WSData>, deliver: () => void) {
+  if (inputAfterCopyModeCancel.has(ws)) {
+    void queueBehindCopyModeCancel(ws, deliver)
+    return
+  }
+  deliver()
+}
+
 async function handleCancelCopyMode(sessionId: string, ws: ServerWebSocket<WSData>) {
   const session = registry.get(sessionId)
   if (!session) return
   if (session.remote && !config.remoteAllowAttach) return
 
-  try {
-    // Exit tmux copy-mode quietly.
-    const target = resolveCopyModeTarget(sessionId, ws, session)
-    if (session.remote && session.host) {
-      await runRemoteTmux(session.host, ['send-keys', '-X', '-t', target, 'cancel'])
-    } else {
-      timedSpawnSync(['tmux', 'send-keys', '-X', '-t', target, 'cancel'], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: 5000,
-      })
-    }
-  } catch {
-    // Ignore errors - copy-mode may not be active
-  }
+  // Exit tmux copy-mode quietly; errors are ignored (copy-mode may not be active).
+  const target = resolveCopyModeTarget(sessionId, ws, session)
+  const args = ['send-keys', '-X', '-t', target, 'cancel']
+  const host = session.remote ? session.host : undefined
+  await queueBehindCopyModeCancel(ws, () =>
+    host ? runRemoteTmux(host, args) : runLocalTmux(args, 5000)
+  )
 }
 
 // The client polls copy-mode every 750ms; a slow tmux must not stack probes.
@@ -2835,7 +2870,7 @@ async function handleCheckCopyMode(sessionId: string, ws: ServerWebSocket<WSData
     } else {
       // Async: this runs on every poll, and a sync spawn would stall all
       // terminal I/O on the event loop whenever tmux is slow.
-      output = (await readTmuxCapture(['display-message', '-p', '-t', target, fmt]))?.trim() ?? ''
+      output = (await runLocalTmux(['display-message', '-p', '-t', target, fmt]))?.trim() ?? ''
     }
     const [inCopyModeField, altScreenField, appMouseField] = output.split(',')
     const inCopyMode = inCopyModeField === '1'
@@ -4272,7 +4307,11 @@ async function attachTerminalPersistent(
 
   const effectiveTarget = terminal.resolveEffectiveTarget(target)
   if (!session.remote && typeof cols === 'number' && typeof rows === 'number') {
-    resizeLocalTmuxWindow(effectiveTarget, cols, rows)
+    // Awaited so the capture below wraps at the new width.
+    await resizeLocalTmuxWindowFor(ws, effectiveTarget, cols, rows, { force: true })
+    if (!isTerminalAttachCurrent(ws, attachSeq)) {
+      return
+    }
   }
 
   // Deduplicate rapid re-attaches to the same session+target (e.g. two
@@ -4308,7 +4347,7 @@ async function attachTerminalPersistent(
   // Capture scrollback history BEFORE switching to avoid race with live output
   const history = session.remote && session.host
     ? await captureTmuxHistoryRemote(effectiveTarget, session.host)
-    : captureTmuxHistory(effectiveTarget)
+    : await captureTmuxHistory(effectiveTarget)
 
   const tCapture = performance.now()
 
@@ -4393,33 +4432,15 @@ async function attachTerminalPersistent(
   }
 }
 
-function captureTmuxHistory(target: string): string | null {
-  try {
-    // Capture only the visible pane so initial attach paints the current view
-    // immediately instead of replaying the entire scrollback buffer.
-    const result = timedSpawnSync(['tmux', ...withTmuxUtf8Flag([
-      'capture-pane',
-      '-t',
-      target,
-      '-p',
-      '-J',
-    ])], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: config.tmuxTimeoutMs,
-    })
-    if (result.exitCode !== 0) {
-      return null
-    }
-    const output = result.stdout.toString()
-    // Only return if there's actual content
-    if (output.trim().length === 0) {
-      return null
-    }
-    return normalizeCapturedHistory(output)
-  } catch {
+async function captureTmuxHistory(target: string): Promise<string | null> {
+  // Capture only the visible pane so initial attach paints the current view
+  // immediately instead of replaying the entire scrollback buffer.
+  const output = await runLocalTmux(['capture-pane', '-t', target, '-p', '-J'])
+  // Only return if there's actual content
+  if (!output || output.trim().length === 0) {
     return null
   }
+  return normalizeCapturedHistory(output)
 }
 
 function normalizeTerminalDimension(value: number): number | null {
@@ -4429,43 +4450,48 @@ function normalizeTerminalDimension(value: number): number | null {
   return dimension
 }
 
-function resizeLocalTmuxWindow(target: string, cols: number, rows: number): void {
+async function resizeLocalTmuxWindow(target: string, cols: number, rows: number): Promise<void> {
   if (!isValidTmuxTarget(target)) return
   const safeCols = normalizeTerminalDimension(cols)
   const safeRows = normalizeTerminalDimension(rows)
   if (safeCols === null || safeRows === null) return
 
-  try {
-    const result = timedSpawnSync([
-      'tmux',
-      'resize-window',
-      '-t',
-      target,
-      '-x',
-      safeCols.toString(),
-      '-y',
-      safeRows.toString(),
-    ], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: config.tmuxMutationTimeoutMs,
-    })
-    if (result.exitCode !== 0) {
-      logger.debug('tmux_window_resize_failed', {
-        target,
-        cols: safeCols,
-        rows: safeRows,
-        error: result.stderr?.toString() ?? '',
-      })
-    }
-  } catch (error) {
-    logger.debug('tmux_window_resize_failed', {
-      target,
-      cols: safeCols,
-      rows: safeRows,
-      error: error instanceof Error ? error.message : String(error),
-    })
+  const output = await runLocalTmux(
+    ['resize-window', '-t', target, '-x', safeCols.toString(), '-y', safeRows.toString()],
+    config.tmuxMutationTimeoutMs
+  )
+  if (output === null) {
+    logger.debug('tmux_window_resize_failed', { target, cols: safeCols, rows: safeRows })
   }
+}
+
+// Last window size each socket asked for, and the queue applying its resizes
+// in order. The client re-sends its size after every ResizeObserver fire; an
+// unchanged size costs no tmux call, and a size superseded while queued is
+// skipped.
+const windowResizeBySocket = new WeakMap<
+  ServerWebSocket<WSData>,
+  { key: string; queue: Promise<void> }
+>()
+
+function resizeLocalTmuxWindowFor(
+  ws: ServerWebSocket<WSData>,
+  target: string,
+  cols: number,
+  rows: number,
+  { force = false }: { force?: boolean } = {}
+): Promise<void> {
+  const key = `${target} ${cols}x${rows}`
+  const previous = windowResizeBySocket.get(ws)
+  if (!force && previous?.key === key) {
+    return previous.queue
+  }
+  const queue = (previous?.queue ?? Promise.resolve()).then(() => {
+    if (windowResizeBySocket.get(ws)?.key !== key) return
+    return resizeLocalTmuxWindow(target, cols, rows)
+  })
+  windowResizeBySocket.set(ws, { key, queue })
+  return queue
 }
 
 function sshOptionsForHost(): string[] {
@@ -4566,7 +4592,8 @@ function handleTerminalInputPersistent(
     ws.data.clipboardArmedAtSec = Math.floor(now / 1000)
   }
 
-  ws.data.terminal?.write(data)
+  const terminal = ws.data.terminal
+  deliverTerminalInput(ws, () => terminal?.write(data))
 
   // On Enter key: immediately set "working" status and schedule refresh
   if (data.includes('\r') || data.includes('\n')) {
@@ -4592,7 +4619,8 @@ function handleTerminalPastePersistent(
 
   // Pasting stages text in the pane's input; it is NOT a submit, so unlike
   // terminal-input we deliberately skip the Enter/"working" status heuristics.
-  ws.data.terminal?.paste(data)
+  const terminal = ws.data.terminal
+  deliverTerminalInput(ws, () => terminal?.paste(data))
 }
 
 function handleTerminalResizePersistent(
@@ -4610,7 +4638,7 @@ function handleTerminalResizePersistent(
 
   ws.data.terminal?.resize(cols, rows)
   if (!session?.remote && ws.data.currentTmuxTarget) {
-    resizeLocalTmuxWindow(ws.data.currentTmuxTarget, cols, rows)
+    void resizeLocalTmuxWindowFor(ws, ws.data.currentTmuxTarget, cols, rows)
   }
 }
 

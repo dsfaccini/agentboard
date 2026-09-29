@@ -3130,6 +3130,112 @@ describe('server message handlers', () => {
     })
   })
 
+  test('input sent after a copy-mode cancel waits for the cancel to land', async () => {
+    const { serveOptions, registryInstance } = await loadIndex()
+    registryInstance.sessions = [baseSession]
+    const websocket = serveOptions.websocket
+    if (!websocket) {
+      throw new Error('WebSocket handlers not configured')
+    }
+
+    const { ws } = createWs()
+    const terminal = new TerminalProxyMock({
+      connectionId: 'ws-test',
+      sessionName: 'agentboard-ws-ws-test',
+      baseSession: 'agentboard',
+      onData: () => {},
+    })
+    ws.data.terminal = terminal
+    ws.data.currentSessionId = baseSession.id
+    ws.data.currentTmuxTarget = 'agentboard:1.1'
+
+    // Hold the cancel's tmux client open until the test releases it.
+    let releaseCancel: () => void = () => {}
+    const cancelExited = new Promise<number>((resolve) => {
+      releaseCancel = () => resolve(0)
+    })
+    const mockedSpawn = bunAny.spawn
+    bunAny.spawn = ((...args: Parameters<typeof Bun.spawn>) => {
+      const proc = mockedSpawn(...args)
+      const command = Array.isArray(args[0]) ? (args[0] as string[]) : []
+      return getTmuxArgs(command)[0] === 'send-keys'
+        ? { ...proc, exited: cancelExited }
+        : proc
+    }) as typeof Bun.spawn
+
+    websocket.message?.(
+      ws as never,
+      JSON.stringify({ type: 'tmux-cancel-copy-mode', sessionId: baseSession.id })
+    )
+    websocket.message?.(
+      ws as never,
+      JSON.stringify({ type: 'terminal-input', sessionId: baseSession.id, data: 'q' })
+    )
+    websocket.message?.(
+      ws as never,
+      JSON.stringify({ type: 'terminal-paste', sessionId: baseSession.id, data: 'p' })
+    )
+    await new Promise((r) => setTimeout(r, 0))
+    // Still in copy-mode: a keystroke delivered now would be a copy-mode command.
+    expect(terminal.writes).toEqual([])
+    expect(terminal.pastes).toEqual([])
+
+    releaseCancel()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(terminal.writes).toEqual(['q'])
+    expect(terminal.pastes).toEqual(['p'])
+
+    // With no cancel in flight, input is delivered synchronously again.
+    websocket.message?.(
+      ws as never,
+      JSON.stringify({ type: 'terminal-input', sessionId: baseSession.id, data: 'x' })
+    )
+    expect(terminal.writes).toEqual(['q', 'x'])
+  })
+
+  test('terminal-resize skips resize-window when the size is unchanged', async () => {
+    const { serveOptions, registryInstance } = await loadIndex()
+    registryInstance.sessions = [baseSession]
+    const websocket = serveOptions.websocket
+    if (!websocket) {
+      throw new Error('WebSocket handlers not configured')
+    }
+
+    const resizeCalls: string[][] = []
+    spawnSyncImpl = ((...args: Parameters<typeof Bun.spawnSync>) => {
+      const tmuxArgs = getTmuxArgs(Array.isArray(args[0]) ? (args[0] as string[]) : [])
+      if (tmuxArgs[0] === 'resize-window') {
+        resizeCalls.push(tmuxArgs)
+      }
+      return {
+        exitCode: 0,
+        stdout: Buffer.from(''),
+        stderr: Buffer.from(''),
+      } as ReturnType<typeof Bun.spawnSync>
+    }) as typeof Bun.spawnSync
+
+    const { ws } = createWs()
+    ws.data.currentSessionId = baseSession.id
+    ws.data.currentTmuxTarget = 'agentboard:1'
+    const resize = (cols: number, rows: number) =>
+      websocket.message?.(
+        ws as never,
+        JSON.stringify({ type: 'terminal-resize', sessionId: baseSession.id, cols, rows })
+      )
+
+    resize(120, 40)
+    resize(120, 40)
+    await new Promise((r) => setTimeout(r, 0))
+    resize(120, 40)
+    resize(100, 30)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(resizeCalls).toEqual([
+      ['resize-window', '-t', 'agentboard:1', '-x', '120', '-y', '40'],
+      ['resize-window', '-t', 'agentboard:1', '-x', '100', '-y', '30'],
+    ])
+  })
+
   test('moves hibernating sessions to history and rejects active sessions', async () => {
     const { serveOptions, registryInstance } = await loadIndex()
     registryInstance.sessions = [
