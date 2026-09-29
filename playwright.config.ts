@@ -45,6 +45,9 @@ mkdirSync(piDir, { recursive: true })
 process.env.AGENTBOARD_DB_PATH = `${tmuxTmpDir}/agentboard.db`
 process.env.LOG_FILE = `${tmuxTmpDir}/agentboard.log`
 process.env.AGENTBOARD_TMUX_PID_FILE = `${tmuxTmpDir}/tmux-server.pid`
+// Also holds the single-instance lock, which the live server holds on
+// ~/.agentboard.
+process.env.AGENTBOARD_DATA_DIR = tmuxTmpDir
 process.env.CLAUDE_CONFIG_DIR = claudeDir
 process.env.CODEX_HOME = codexDir
 process.env.PI_HOME = piDir

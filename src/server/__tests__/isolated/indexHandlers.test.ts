@@ -83,6 +83,9 @@ const defaultConfig = {
   tmuxMutationTimeoutMs: 15000,
   pasteImageMaxBytes: 20 * 1024 * 1024,
   claudeNoFlicker: true,
+  // Real config.dataDir feeds the single-instance lock; point it at a
+  // per-process tmp dir so re-imports in this process share a lock harmlessly.
+  dataDir: path.join(os.tmpdir(), `agentboard-indexhandlers-${process.pid}`),
 }
 
 const configState = { ...defaultConfig }
@@ -337,6 +340,7 @@ mock.module('../../config', () => ({
 }))
 mock.module('../../logger', () => ({
   logLevel: 'info',
+  flushLogger: () => {},
   logger: {
     debug: (event: string, data?: Record<string, unknown>) =>
       logEntries.push({ level: 'debug', event, data }),

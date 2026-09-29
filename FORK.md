@@ -20,6 +20,11 @@ upstream change, or touching tmux/pty lifecycle code.
   integration tests work behind David's `sfw` package-manager proxy). A direct
   `bun test <file>` bypasses that and will hang `waitForHealth` under `sfw` —
   prefer `bun run test`, or set `NO_PROXY=localhost,127.0.0.1,::1`.
+- **`bun run dev` next to the launchd service** needs its own data dir and
+  port: the service holds `~/.agentboard/server.lock` and port 47329, and a
+  second server on either refuses to start. Run
+  `AGENTBOARD_DATA_DIR=~/.agentboard-dev PORT=47339 bun run dev` (db, log, lock
+  and tmux pid file all follow the data dir; vite proxies to `PORT`).
 
 ## Goals (in priority order)
 
