@@ -68,6 +68,7 @@ import { generateSessionName } from './nameGenerator'
 import { shellQuote } from './shellQuote'
 import { startGhGatewayWatchdog } from './ghGatewayWatchdog'
 import { getMemoryStatus, startMemorySampler } from './memorySampler'
+import { startStuckShellReaper } from './stuckShellReaper'
 import { SshTerminalProxy } from './terminal/SshTerminalProxy'
 import {
   buildTmuxFormat,
@@ -1309,6 +1310,7 @@ setInterval(refreshSessions, config.refreshIntervalMs) // Async for periodic
 
 startGhGatewayWatchdog() // fork-only: keep David's local gh-gateway proxy alive
 startMemorySampler() // fork-only: continuous heap/rss ring for multi-day growth slope
+startStuckShellReaper() // fork-only: free ptys pinned by tmux grouped-session creation
 
 // Event loop lag monitor — detects when spawnSync or other blocking work
 // starves the event loop, causing typing lag and slow WebSocket delivery.

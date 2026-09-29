@@ -73,6 +73,9 @@ security → perf/safety → features.
   overrides the path, `AGENTBOARD_GH_GATEWAY_WATCHDOG_MS` the interval. This is a
   David-local convenience coupled to a foreign subsystem — pure fork territory,
   never upstream it.
+- **Stuck-shell reaper** (`src/server/stuckShellReaper.ts`, wired in
+  `index.ts`): frees ptys pinned by tmux grouped-session creation. See the
+  watch-list entry; keep it until tmux stops leaking the throwaway shell.
 - **Weekly memory recycle** (`scripts/agentboard-memory-recycle.sh`, LaunchAgent
   `com.agentboard.memory-recycle` via `launchd/install.sh`): Sunday 04:15 local.
   Kickstarts `com.agentboard` (clears multi-day bun phys_footprint growth —
@@ -134,6 +137,17 @@ security → perf/safety → features.
   test teardown, error paths in `PtyTerminalProxy.doStart`). Tests must never
   create sessions on the default socket — isolate via `TMUX_TMPDIR` and tear the
   whole isolated server down with `kill-server`. See incident below.
+- **Stuck shells from grouped sessions** — `tmux new-session -t <group>`
+  (`PtyTerminalProxy.doStart` on every websocket open, `SessionManager` group
+  recovery) spawns a throwaway default-shell window and closes its pty without
+  signalling it. If the shell hasn't taken its tty yet, zsh blocks forever and
+  pins a pty. Signature: `-zsh` child of the tmux server, not a pane, fds 0–2
+  only. Reconnect storms multiply it (2026-09-28: 110 stuck shells, ptys at
+  158/511). `src/server/stuckShellReaper.ts` SIGHUPs them every minute
+  (`AGENTBOARD_STUCK_SHELL_REAPER=false` disables). Real fix belongs in tmux.
+- **Isolated tmux must use `-S`** — a missing `TMUX_TMPDIR` silently falls back
+  to the default socket, and an inherited `TMUX` overrides `TMUX_TMPDIR`. Any
+  call that can mutate or kill must target `-S <dir>/tmux-<uid>/default`.
 - **Hot-path perf** — terminal output and input batching.
 - **Caps & auth** — keep payload/size/MIME limits when editing endpoints/WS.
 - **tmux-resurrect/continuum boot race** — agentboard's launchd job starts the
